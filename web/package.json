@@ -9,7 +9,10 @@
     "lint": "eslint",
     "test": "vitest run",
     "spike": "tsx scripts/spike.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "accept:phase1": "tsx scripts/phase1-acceptance.ts",
+    "timing:nfr1": "tsx scripts/nfr1-timing.ts",
+    "float:topup": "tsx scripts/top-up-float.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "0.5.15",

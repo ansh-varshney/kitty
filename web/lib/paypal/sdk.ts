@@ -18,12 +18,25 @@ export function paypalClient(): Client {
   const { PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET } = env();
   client = new Client({
     environment: Environment.Sandbox,
-    timeout: 30_000,
+    timeout: 15_000, // per attempt
     clientCredentialsAuthCredentials: {
       oAuthClientId: PAYPAL_CLIENT_ID,
       oAuthClientSecret: PAYPAL_CLIENT_SECRET,
     },
-    httpClientOptions: { retryConfig: { maxNumberOfRetries: 2 } },
+    // The generated defaults retry nothing (maximumRetryWaitTime 0) and never retry POST. Every money call here
+    // sends its own PayPal-Request-Id, which the SDK reuses on retry, so retrying POST can't double-charge.
+    // Phase 1 finding: one 30 s sandbox stall killed a whole run.
+    httpClientOptions: {
+      timeout: 15_000,
+      retryConfig: {
+        maxNumberOfRetries: 2,
+        retryInterval: 1,
+        backoffFactor: 2,
+        maximumRetryWaitTime: 20,
+        retryOnTimeout: true,
+        httpMethodsToRetry: ["GET", "PUT", "POST"],
+      },
+    },
   });
   return client;
 }

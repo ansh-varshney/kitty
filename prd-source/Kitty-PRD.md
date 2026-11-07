@@ -1,6 +1,6 @@
 # Kitty: Product Requirements Document
 
-**Version 1.4 · 7 Nov 2026 · Status: IN BUILD (Phase 0 done; detail passes per feature during the build)**
+**Version 1.12 · 7 Nov 2026 · Status: IN BUILD (Phase 1 complete, owner testing; AI on Groq; Phase 2 next, on the owner's go)**
 Owner: Ansh Varshney (solo) · Hackathon: *Build What's Next with PayPal and AI* (Devpost) · Deadline: Thu 12 Nov 2026, 12:00 PM PT (Fri 13 Nov, 1:30 AM IST)
 
 > This PRD is the **single source of truth** for the build. Requirement IDs (`FR-…`, `NFR-…`, `AT-…`) are the build spec. To change the spec: edit `prd-source/Kitty-PRD.md`, bump the version in `prd-source/build.py`, add a row to the change log (§E3), and rebuild the PDF with `python prd-source/build.py`.
@@ -624,6 +624,7 @@ How changes are suggested, how kittens look for something that fits everyone, an
 - **FR-WHIM-6** A whim that misses its threshold MUST fade, notifying only the floater.
 - **FR-WHIM-7** Edits MUST be versioned and undoable; only affected members MUST be re-asked.
 - **FR-WHIM-8** The kitten MUST NOT create a whim from chat content without asking its owner first.
+- **FR-WHIM-9** Reading a typed whim MUST NOT depend on the AI being available: code reads price (total or each), dates and times, and fills anything the AI misses; the whim is ready within the NFR-1 budget either way. Each friend's prepared answer shows their expected share.
 
 ---
 
@@ -734,6 +735,7 @@ When you paw in, you see a **share ladder**: "If 4 go: $175 · 5: $140 · 6: $11
 - **FR-PLAN-4** Paw-in MUST show the share ladder for likely group sizes.
 - **FR-PLAN-5** Visible member status MUST be in / thinking / not this time; no amounts or reasons may be shown to others.
 - **FR-PLAN-6** Any member MUST be able to volunteer as booker; the host confirms.
+- **FR-PLAN-7** Every member MUST see their own expected share: the cost split across the larger of "need at least" and the number of people who would be in (counting them if they join), with custom amounts and weights applied. Example: need 3, 2 in, the third sees cost / 3; 4 in, the fifth sees cost / 5. After the Pounce it shows what they paid. Only their own share is shown.
 
 ---
 
@@ -1201,8 +1203,23 @@ Your Kitty info can be read by the other assistants you use. Ask Meta Muse, Chat
 | **My Month** | Money (fun budget, owed, saved) and Calendar (plans, busy times) |
 | **My Kitten** | Look, name, breed, House Rules, Treat Jar, Kitten Diary, Nine Lives requests, memory, export |
 
+### It must look and feel like a mobile app, even on a laptop
+The demo and the video run on a Windows laptop, but Kitty must read as a **phone app**, not a website.
+
+| How | Detail |
+|---|---|
+| **App shell** | Full-screen pages, a fixed bottom tab bar, slide-up sheets instead of new pages, and app-style transitions with no page reloads; safe-area padding; no browser-style links or footers |
+| **Installable** | A PWA: manifest, app icon, splash colour, standalone display. Installed from Chrome/Edge on Windows, it opens in its own window with no address bar. |
+| **Phone frame on wide screens** | Wider than 600 px (laptop, judges' desktops), the app renders inside a **phone frame** (390 × 844) centred on a branded night-sky backdrop. Phones get the app full screen. |
+| **Demo** | Record the video from the phone-framed app (or the installed app window sized to a phone) |
+| **Optional, Phase 4** | Wrap the same app with Capacitor as an Android APK, only if time allows. The phone frame is the main demo path. |
+
+The dev console (`/dev`) is a desktop tool and isn't part of the app shell.
+
 ### Requirements
-- **FR-UX-1** The app MUST be a responsive web app, designed mobile-first at 375 px.
+- **FR-UX-1** The app MUST be built mobile-first at 375–390 px, as an app shell (bottom tabs, sheets, client-side transitions, safe areas); it MUST NOT look like a website.
+- **FR-UX-7** On viewports wider than 600 px the app MUST render inside a phone frame (390 × 844) centred on a branded backdrop; on phones it MUST be full screen.
+- **FR-UX-8** The app MUST be installable as a PWA (manifest, icons, standalone display) so it opens in its own window on Windows.
 - **FR-UX-2** Every cat-themed label MUST show plain words.
 - **FR-UX-3** The product UI MUST NOT use emojis; all icons and characters MUST be custom.
 - **FR-UX-4** Every money moment in the table above MUST have a visual state (polished animation in the UI phase; a simple placeholder before that).
@@ -1292,12 +1309,16 @@ Judges have no PayPal accounts or AI keys, won't wait days for deadlines, and wo
 ### Speed first
 In this product a fast, good-enough answer beats a slow, brilliant one. The default model is the fastest one; the larger model is used only where it's needed.
 
-| Use | Model | Fallback |
-|---|---|---|
-| Prepared answers, rule mapping, chat replies, Meows, reminders, all copy | **`gemini-3.1-flash-lite`** (default) | `gemini-3.5-flash` |
-| Reading screenshots, links and receipts (vision); complex parsing | `gemini-3.5-flash` | `gemini-3.1-flash-lite` |
+**Changed 7 Nov (owner decision): Groq first, Gemini as the fallback, no Mistral.** Gemini's free tier stalled for over an hour and Flash is capped at 20 requests a day. Only providers with a key are used; when none answers, code takes over (templates, the code whim reader, keyword chat).
 
-Free-tier facts (5 Nov): Pro models have 0 quota; `gemini-2.5-*` return 404 for new users; Flash sometimes returns 503.
+| Use | Chain (first that answers) |
+|---|---|
+| Prepared answers, rule mapping, chat, all copy (text) | **Groq `openai/gpt-oss-20b`** → Groq `qwen/qwen3.8-27b` → Groq `openai/gpt-oss-120b` → Gemini `gemini-3.1-flash-lite` → `gemini-3.5-flash` → code |
+| Reading screenshots, links and receipts (vision) | **Groq `qwen/qwen3.8-27b`** → Gemini → code (title only) |
+
+Measured on the owner's Groq account (7 Nov): the live model list did NOT include the Llama models that third-party articles named, so the chain uses what is actually offered. Qwen 3.8 answers in 0.1–0.5 s and reads a screenshot in ~0.4–2 s; gpt-oss-20b is steady at 0.3–0.6 s; gpt-oss-120b 0.5–0.9 s; Gemini 1.3–5 s. Each Groq model allows 1,000 requests a day and ~7,000 input tokens a minute; one screenshot costs ~1,800 tokens, so text goes to gpt-oss-20b first and Qwen's budget is kept for images. A short per-minute limit ("try again in 3.9 s") is waited out when the budget allows. Typed whims: code wins on dates and money (a model once put "Friday 7pm" on a Wednesday); the AI fills gaps and suggests the title. Phase 3: the phone should shrink screenshots before upload to cut their token cost.
+
+Free-tier facts (5 Nov): Pro models have 0 quota; `gemini-2.5-*` return 404 for new users; Flash sometimes returns 503. (7 Nov) Flash free tier = **20 requests a day per model**; a quota error benches that model until Gemini's retry time.
 
 ### What's AI and what's code
 | Job | AI | Code |
@@ -1324,8 +1345,8 @@ Free-tier facts (5 Nov): Pro models have 0 quota; `gemini-2.5-*` return 404 for 
 5. Every action is logged with its reason (Kitten Diary).
 
 ### Requirements
-- **FR-AI-1** The default model MUST be the fastest available (Flash-Lite); the larger model only for vision and complex parsing.
-- **FR-AI-2** Every Gemini call MUST retry on 429/503 with a fallback model, and fall back to templates if both fail.
+- **FR-AI-1** The kitten MUST use the fastest available model first (Groq), across providers, for every task including vision.
+- **FR-AI-2** Every AI call MUST have a time budget, rest a rate-limited or stalled model, move to the next model, and fall back to code (templates, the code whim reader, keyword chat) when none answers.
 - **FR-AI-3** Every structured output MUST be schema-validated.
 - **FR-AI-4** Kitten prompts MUST include only the owner's own data plus referee totals.
 - **FR-AI-5** AI tools and models used MUST be listed in the README and on Devpost.
@@ -1370,7 +1391,7 @@ Free-tier facts (5 Nov): Pro models have 0 quota; `gemini-2.5-*` return 404 for 
 | Live updates | Server-sent events from the app + Postgres LISTEN/NOTIFY | No extra service |
 | Jobs | **Render Workflows** (TypeScript SDK, public beta) for durable jobs: deadlines, Meows, Kitty Party checks, Catnip clean-up, Demo World reseed. Fallback: Render Cron Jobs. | Sponsor prize angle |
 | Auth | Log in with PayPal (fallback: email + password) | Verified payout email in one step |
-| AI | Gemini API (`@google/genai`) | Free tier; key in `.env` |
+| AI | Groq (OpenAI-compatible API) first; Gemini (`@google/genai`) as the fallback | Free tiers; keys in `.env` (`GROQ_API_KEY`, optional `GEMINI_API_KEY`) |
 | PayPal | Server SDK (APIMatic) + REST + Agent Toolkit; JS SDK | §C1 |
 | Gifts | Channel3 API | Sponsor; code `PAYPAL-HACKATHON-2026` |
 | Diary / My Month tables | AG Grid (SHOULD) | Sponsor prize pool |
@@ -1442,7 +1463,7 @@ Kitty/                      repo root (git)
 | **0. Setup and spikes** | Fri 6 Nov | Repo (MIT LICENSE), Next.js app on a Render paid instance + Render Postgres, `.env` wiring. PayPal spike on the hosted URL: Log in with PayPal, hold → partial capture → void → refund → payout, webhook verification, a quantity subscription, server-side test-card hold. 6 sandbox friend accounts. Gemini fast/fallback client. APIMatic plugin installed. | Every spike call works from the hosted URL; findings recorded in the PRD |
 | **1. Backend core** | Sat 7 – Sun 8 Nov | Referee (shares, rounding, invariant, fits, partial Pounce, paw-up, cover, tag along) with unit tests · sign-up APIs (§B1) · kitten runtime, prepared answers, friend's-kitten ask-owner (§B2) · House Rules R1–R7 + personal-rule guardrail (§B3) · Treat Jar ledger (§B4) · squads, mini-squads, chat events over SSE (§B5) · whims from text/screenshot/link (§B6) · suggestions + 2-round loop guard (§B7) · plans (§B8) · paw in / Pounce from savings, jar and PayPal (§B9) · receipts + leftovers to source (§B10) · fun-budget check + calendar clash check (§B20 rules) · event log for the Kitten Diary (§B19) · core kitten chat tools (§B18) | AT-1 to AT-12, AT-14 to AT-16, AT-19, AT-21 to AT-23 pass via API / dev console |
 | **2. Backend non-core** | Mon 9 Nov | "I paid" cards, Yarn, Untangle (§B11) · Nine Lives (§B12) · Kitty Party with per-person savings (§B13) · Catnip with auto-delete (§B14) · The Bowl (§B15) · Meows + alerts (§B16) · purrs, tags, Top Cat, streaks (§B17) · My Month data (§B20) · remaining chat tools (§B18) · Render Workflows jobs: deadlines, Meows, party checks, Catnip clean-up · export: MCP, calendar feed, CSV (§B21) | AT-13, AT-17, AT-18, AT-24 pass; scheduled jobs run on Render |
-| **3. Frontend and UI** | Tue 10 Nov | The simple 5-tab app (§B22): Meows · Squads (rooftop, Chat, Plans, Yarn, Party, Bowl, My settings) · "+" (whim, I paid, ask for help) · My Month (money + calendar) · My Kitten (rules, Treat Jar, Diary, help requests). Sign-up's 5 pages. The SVG kitten (base + variants). Simple money-moment animations. Mobile at 375 px. | Every Phase 1–2 flow works from the real screens on a phone |
+| **3. Frontend and UI** | Tue 10 Nov | The simple 5-tab app (§B22): Meows · Squads (rooftop, Chat, Plans, Yarn, Party, Bowl, My settings) · "+" (whim, I paid, ask for help) · My Month (money + calendar) · My Kitten (rules, Treat Jar, Diary, help requests). Sign-up's 5 pages. The SVG kitten (base + variants). Simple money-moment animations. **Mobile-app shell + phone frame on laptop + installable PWA (FR-UX-1, 7, 8).** | Every Phase 1–2 flow works from the real screens, inside the phone frame on a laptop and full screen on a phone |
 | **4. Demo World, video and polish** | Wed 11 Nov | Demo World: seed, "let the squad respond", nightly reseed, pre-generated text (§B23) · design polish on the screens the video shows · video script, recording, edit, YouTube upload · README (setup, sandbox login, AI tools, path to production) | AT-20 passes; the video is uploaded; the README is complete |
 | **5. Submit** | Thu 12 Nov | **Upgrade Render first:** the owner adds a card in Render; we switch `render.yaml` (or the dashboard) to web **Starter** + database **Basic 256 MB**, upgraded in place so data is kept; confirm `/api/health` and that the app no longer sleeps. Then: buffer for fixes; make the GitHub repo public; Devpost entry (description, built with, AI tools, links); final checks; APIMatic claim form. | Render on paid plans (awake, database won't expire); submitted by evening IST (hard deadline Fri 13 Nov, 01:30 IST) |
 
@@ -1570,11 +1591,123 @@ The 3-minute script is written on Mon 9 Nov, once the core loop runs, so the des
 - Phase 0 uses PayPal's **redirect approval links** (no JS SDK yet). The JS SDK v6 vs v5 choice moves to Phase 3.
 - The dev console (`/dev`) is locked with `DEV_CONSOLE_KEY` on the hosted URL.
 
-**Open (owner steps):**
-- Upload `sandbox-friends-us.csv` (6 accounts)
-- Enable Log in with PayPal + return URLs
-- Deploy the Render Blueprint. Render asked for a card for paid plans, so we start on **free** plans and upgrade in Phase 5. Log in with PayPal also needs this live https URL: PayPal rejects `localhost` return URLs.
-- Register the webhook on the hosted URL
+**Owner steps and live checks: all done (7 Nov 2026). Phase 0 is complete.**
+
+| Item | Result |
+|---|---|
+| Sandbox friends | Uploaded: Ava, Jordan, Tyler, Zoe, Marcus, Judge (US personal, $5,000 each). The upload file must be **plain UTF-8**; UTF-16 is rejected. |
+| Live app | https://kitty-web.onrender.com on Render **free** plans (web + Postgres). `/api/health` ok, `db: postgres`. Upgrade in Phase 5. |
+| Webhook | ID (ID in `.env` as `PAYPAL_WEBHOOK_ID`) → `/api/paypal/webhook`. Real events arrive **verified**: authorization created, capture completed, capture refunded, order approved, sale completed, subscription activated. A simulator test event sent before the ID was set showed "not verified", as expected. |
+| Log in with PayPal | Enabled with the live return URL and live privacy/terms links. Jordan logged in; email received and verified. PayPal rejects `localhost` return URLs. |
+| Hold with a PayPal account (live) | Ava approved; $15.00 hold CREATED, expires after 29 days |
+| Subscription with quantity (live) | Ava approved; ACTIVE, quantity 10 |
+
+### Phase 1: detail pass (design decisions before coding, 7 Nov 2026)
+
+**Who is who**
+- Real users sign in with **Log in with PayPal**. The app upserts the user by PayPal payer ID and sets a signed session cookie.
+- **Demo users** (Ava, Jordan, Tyler, Zoe, Marcus, Judge) are seeded with kittens and a squad. For testing, the dev console can **act as** any demo user (dev key only).
+- Demo users' PayPal holds use **server-side test-card authorizations** (no popup). Real users approve holds on PayPal.
+
+**Data (one migration)**
+- `users`, `kittens`, `rules`, `squads` (kind: squad / mini), `memberships`
+- `whims`, `answers`, `suggestions`
+- `plans`, `plan_members` (private limit, weight, custom amount, savings switch), `paws` (initial / paw-up / cover / tag-along; source: savings / jar / PayPal), `pounces`, `captures`, `refunds`, `receipts`
+- `busy_blocks`, `ledger` (double-entry), `events`
+
+**Ledger (double-entry, integer cents)**
+- Accounts:
+  - `world` (outside money on PayPal)
+  - `jar:{user}` and `jar_held:{user}`
+  - `savings:{party}:{user}` (used in Phase 2)
+  - `plan:{plan}`
+- Every movement writes entries that sum to zero.
+- Invariant: when a plan is settled, `plan:{plan}` is zero, and the cents in equal the cents out.
+
+**Referee (pure functions, unit-tested)**
+- `splitCents`: largest-remainder split
+- `planShares`: equal, custom amounts, weights, cover
+- `solveGroup`: partial Pounce
+  - Who fits, who's short and by how much
+  - Max 2 paw-up rounds
+- `tagAlong`: the new share and exact refunds
+- `leftovers`: proportional to what each paid, back to each source
+- `decide`: House Rules → auto / ask / deny
+  - Personal rules can only return "ask"
+- `budget`: fun-budget headroom
+- `clash`: plan overlap = hard "busy"; a busy time = a warning
+- `pickCandidate`: most members fit → best Borda rank → lower price, with the 2-round no-repeat loop guard
+
+**Lifecycles**
+- Whim: floating → plan (when "need at least" say yes) | faded (expired)
+- Plan: open → pounced → settled; open → on ice (deadline unmet: everything released) → reopened | cancelled
+- Paw: pending approval → held → captured | voided
+
+**Deadlines and timers**
+- One `tick` job processes due whims, deadlines and hold windows.
+- In Phase 1 it runs from the dev console and a keyed endpoint; Render Workflows calls it on a schedule in Phase 2.
+
+**Live updates**
+- Server-sent events. The server polls `events` every ~1.5 s per open stream (simple and works on Render's free plan).
+
+**Kitten AI in Phase 1**
+- Whim parsing: text, screenshot (vision), link (page metadata + text)
+- Reason lines for prepared answers (facts computed in code)
+- Rule mapping to R1–R7 or a personal rule
+- Receipt totals
+- Chat: Gemini maps a message to one tool from a fixed list (JSON). Code validates it and returns a confirmation card.
+- Every AI call is Flash-Lite first, with template fallbacks.
+
+**Not in Phase 1 (Phase 2):**
+- Kitty Party (the savings source works in the ledger, but creating parties is Phase 2)
+- Yarn, Nine Lives, Catnip, Bowl, Meows, purrs, My Month screens, export
+
+**Phase 1 acceptance:** AT-1 to AT-12, AT-14 to AT-16, AT-19 and AT-21 to AT-23, run as an automated script against the real sandbox. AT-10 (savings first) uses ledger-seeded savings.
+
+### Phase 1: results (backend core, 7 Nov 2026)
+
+**Built**
+- 4 migrations (core tables, Pounce details, per-user time zone), double-entry ledger, referee, services for sign-up, rules, squads, Treat Jar, whims, plans, paw in, Pounce, tag along, receipts, timer, kitten AI and chat.
+- `/api/v1`: one route table (49 routes) with membership checks on every plan and squad route; host-only Pounce and negotiate; zod-checked bodies; errors written for people.
+- `/api/v1/stream`: server-sent events; own events in full, squad events masked.
+- Log in with PayPal now creates the user and a signed session (CSRF `state` cookie). Dev "act as" and dev routes need the dev key; on Render with no key they are closed.
+- `/dev/play`: a plain test bench to drive the backend as any demo friend (not product UI).
+
+**Tests**
+- 42 unit tests (referee, money, PayPal client, Gemini fallback and quota bench, time zones).
+- `npm run accept:phase1`: 22 end-to-end checks against the real sandbox and Gemini on a fresh in-memory database, including a forced capture failure and the ledger-sums-to-zero check. **22/22 pass.**
+- `npm run timing:nfr1`: whim → prepared answers timing.
+
+**Findings (and what changed)**
+- **Gemini free tier: Flash allows only 20 requests a day per model.** It ran out during testing. Every call, including screenshots and receipts, is now Flash-Lite first. A quota error benches that model until Gemini's own retry time instead of retrying it. Per-model limits are only visible in AI Studio (signed in). Linking billing (Tier 1) is the owner's call before judging.
+- **Batching:** all friends' reason lines come from ONE call (was one call per friend), and plan re-checks are batched too. A whim with 5 friends was 11–88 s; it is now 1.0–3.6 s (worst seen 5.1 s when calls ran back to back). AT-23 went from 88 s to 3 s. **NFR-1 met.**
+- **Reason lines** start with the answer and speak to the owner. A "maybe" now always says why ("I can't tell if it's your kind of thing").
+- **Time zones:** "Friday 7pm" was read in the server's zone. Each user now has a time zone (default US Pacific). The model gets the user's local date and time and returns wall-clock times; code converts them. A weekday that already passed moves to next week (code has the last word).
+- **Booker's own leftover** was not recorded as a refund, so a later tag-along over-refunded by exactly the booker's part. Fixed. A leftover the booker hands back is no longer counted as their spending.
+- **Pounce captures now run in parallel** (AT-5: 28 s → 18 s of sandbox calls). If any capture fails, the ones that went through are refunded, the affected members are released (final captures can't be reused) and asked to paw in again, and the plan reopens. A forced failure is in the acceptance script.
+- Tag-along members now store their limit, like everyone else who is "in".
+
+**Still Phase 3 (needs approval screens):** real-user flows that need a PayPal approval after the Pounce (tag along, returning a leftover, paying an overrun). Demo friends use test cards for these today.
+
+### Phase 1: second pass (click-through as a user, 7 Nov 2026)
+
+The whole flow was clicked through in `/dev/play` as Ava, Jordan and Tyler, and every guardrail was tried. Findings and fixes:
+
+- **Payouts need real PayPal balance, not card money.** The platform's sandbox account started with $5,000. Money received by test card counts in its balance but PayPal won't use it for Payouts. Today's tests spent the original $5,000, so bookers can't be paid until the account is funded. **Owner action before the demo:** add balance to the sandbox business account in the developer dashboard. If that isn't possible, create a new sandbox business account with a large balance and a new app on it (new keys, re-register the webhook, re-enable Log in with PayPal). Also cut test payouts: keep Demo World amounts small.
+- **A failed payout never strands money.** The Pounce is recorded, the money waits in the plan's pot, the booker is told not to book yet, and the timer retries the payout. Receipts wait until the payout has arrived. The squad only hears "the booker has been paid" once it's true.
+- **No double booking, fixed for plans with no end time.** They counted as zero minutes and never clashed. They now count as 3 hours, like everywhere else.
+- **A friend's kitten:** "is Jordan free on Saturday?" now uses Jordan's own day in his time zone (a Friday-evening plan looked like Saturday in UTC). "Is he coming to bowling?" is answered from the plan (only plans in a squad the asker shares). Money questions are always refused.
+- **Kitty's own words are explained from a glossary in code**, not by the model (it made up a meaning for "paw up").
+- **Gemini:** a hard time limit per call (the SDK's own limit didn't cut slow calls). If the last available model is slow, it gets one more try before the template. Chat replies take 0.3–2.5 s typically.
+- **Funded (owner, 7 Nov):** the owner added balance to the sandbox business account (`store.owner.av26@business.example.com`). $5 and $80 payouts then worked, and the full acceptance run passed **23/23** on the real sandbox.
+- **Typed rules:** words that try to loosen control ("never ask me", "as much as you want", "no limit") are rejected by code before any AI call. If the AI can't read a rule, nothing is saved; the kitten asks you to try again.
+- **PayPal stalls:** one sandbox call hung for 30 s and stopped a whole run. The PayPal SDK's generated defaults retry nothing (and never POST). Every PayPal call now has a 15 s limit per attempt and up to 2 retries. Retries reuse the call's PayPal-Request-Id, so they can't double-charge or double-pay (unit-tested). Final run: **23/23**.
+- **Chat when the AI is busy:** simple questions (my month, my Treat Jar, my plans, ask a friend's kitten) are routed by keywords in code, so they still work during Gemini quota or timeout spells.
+- **Owner test, round 1 (7 Nov):**
+  - "Seeing $60 paid, but the bill was $54": the playground's single amount box still held 25 when the receipt was added, so the receipt said $25 and was never confirmed. The receipt now has its own box. How the money works: the Pounce pays the booker the full $60 before booking; after the receipt, the $6 left over goes back by share ($2 each; the booker keeps theirs from the $60 and returns the other $4, which are refunded to the others' original payments).
+  - Zoe's "cabin weekend dec 12-14, 1200 total" came back with no price or dates and took 34 s: Gemini was overloaded (503 high demand). Every AI step now has a hard total budget, and code reads typed whims (FR-WHIM-9), so the price and dates are there even with the AI down.
+  - New: "need at least" when floating a whim; every member sees their expected share (FR-PLAN-7) on the prepared answer and the plan; the host can set uneven splits (custom amount or weight per person), which the Pounce charges.
+- **Dev setup:** the local database lives outside the project (`~/.kitty-dev/pglite`), because the dev server's file watcher reloaded on every database write. A blank setting now counts as "not set". The Kitten Diary shows the PayPal hold ID on paw-in.
 
 ## D9 README must include
 - **FR-DOC-1** Setup, Demo World instructions, and the single sandbox buyer login.
@@ -1644,3 +1777,11 @@ The 3-minute script is written on Mon 9 Nov, once the core loop runs, so the des
 | 1.2 | 6 Nov 2026 | Treat Jar / free hand / fun budget explained; "always ask above" merged into free hand (rules now R1–R7). Interests (pick 3+) on sign-up page 2. My Month gains a small calendar; no double booking (FR-CAL). Whims to chosen friends create mini-squads. The floater sets "need at least" (default half), also the Pounce minimum. Plan changes: kittens suggest, 2-round loop guard, owners always tap; host edits apply, members' edits become suggestions. Kitty Party savings tracked per person with a worked example; leftovers return to their source. Build plan split into Phases 0–5 with exit criteria and a cut order; development starts on the owner's go. New AT-21 to AT-24. |
 | 1.3 | 7 Nov 2026 | Phase 0 built. Added the phase-report rule (§D1 step 5) and the Phase log (§D8) with spike results: server-side test-card holds work with no popup; partial capture, partial refund, void, payouts, quantity subscriptions OK; Gemini Flash-Lite ~1.3 s. Repo layout updated to the as-built tree (§C5): repo root = Kitty folder, app in web/. README requirements renumbered to §D9. |
 | 1.4 | 7 Nov 2026 | Render runs on free plans while building (Render needs a card for paid plans). Phase 5 now starts with: owner adds a card, upgrade in place to web Starter + Postgres Basic 256 MB, make the repo public (§D1, §C4, §D4). Phase log notes Log in with PayPal needs the live https URL (§D8). |
+| 1.5 | 7 Nov 2026 | Phase 0 complete: live app on Render, webhook verified with real events, Log in with PayPal working on the live URL, live hold and quantity subscription approved, sandbox friends renamed (Ava, Jordan, Tyler, Zoe, Marcus, Judge) and uploaded (§D8). |
+| 1.6 | 7 Nov 2026 | Mobile-app rule: app shell, phone frame on laptops, installable PWA (§B22 FR-UX-1/7/8; Phase 3). Phase 1 detail pass in §D8: sessions, demo users with test-card holds, data model, double-entry ledger, referee functions, lifecycles, tick, SSE, kitten AI scope. |
+| 1.7 | 7 Nov 2026 | Phase 1 built and tested (§D8 Phase 1 results): /api/v1 with access checks, SSE stream, real login sessions, dev playground; 22 end-to-end checks on the real sandbox. Gemini: Flash-Lite first for every task incl. vision (Flash free tier = 20 a day; §C2, FR-AI-1), batched reason lines. Per-user time zones. Fixes: booker's own leftover, parallel Pounce captures with a clean failure path. |
+| 1.8 | 7 Nov 2026 | Phase 1 second pass (§D8): click-through as a user. Payouts need real sandbox balance (card money can't fund them); failed payouts wait in the pot and retry; receipts wait for the payout. Fixes: clashes for plans with no end time, friend's-kitten availability in their time zone and attendance from plans, glossary answers from code, hard Gemini time limit, local DB outside the project. |
+| 1.9 | 7 Nov 2026 | Phase 1 complete (§D8): sandbox business account funded by the owner, acceptance 23/23. Rules that loosen control rejected in code; unreadable rules not saved; keyword chat fallback when Gemini is busy; PayPal calls get a 15 s limit and safe retries. |
+| 1.10 | 7 Nov 2026 | Owner test round 1 (§D8): FR-PLAN-7 (everyone sees their expected share: split by max(need at least, people in)); FR-WHIM-9 (typed whims read by code too, AI on a time budget); "need at least" on whims; host sets uneven splits; separate receipt box in the playground. |
+| 1.11 | 7 Nov 2026 | AI moved off Gemini as the main model (owner decision): Groq first, then Mistral, then Gemini, then code (§C2, FR-AI-1/2, §C4 stack). Gemini's free tier stalled for over an hour on 7 Nov. |
+| 1.12 | 7 Nov 2026 | Groq live: the chain uses the models the account actually offers (gpt-oss-20b, Qwen 3.8 for screenshots, gpt-oss-120b), then Gemini; no Mistral. Measured speeds and limits; code wins on dates and money for typed whims (§C2). |

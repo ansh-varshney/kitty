@@ -47,4 +47,20 @@ describe("PayPal REST client (FR-PP-1, FR-PP-4)", () => {
     await paypalRequest("GET", "/b", { fetchImpl: impl });
     expect(calls.filter((c) => c.url.endsWith("/v1/oauth2/token"))).toHaveLength(1);
   });
+
+  it("retries a dropped connection with the SAME idempotency key (no double payout)", async () => {
+    const calls: Call[] = [];
+    let n = 0;
+    const impl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      if (url.endsWith("/v1/oauth2/token")) return new Response(JSON.stringify({ access_token: "tok", expires_in: 32000 }), { status: 200 });
+      if (n++ === 0) throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+      return new Response(JSON.stringify({ id: "Y" }), { status: 201 });
+    }) as unknown as typeof fetch;
+    const res = await paypalRequest<{ id: string }>("POST", "/v1/payments/payouts", { body: {}, requestId: "batch-1", fetchImpl: impl });
+    expect(res.id).toBe("Y");
+    const ids = calls.filter((c) => !c.url.endsWith("/oauth2/token")).map((c) => (c.init.headers as Record<string, string>)["PayPal-Request-Id"]);
+    expect(ids).toEqual(["batch-1", "batch-1"]);
+  });
 });
+

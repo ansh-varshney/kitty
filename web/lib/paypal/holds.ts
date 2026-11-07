@@ -103,6 +103,55 @@ export async function voidHold(authorizationId: string) {
   return { status: result.status };
 }
 
+/**
+ * One-off payment (Treat Jar top-up, paying back a leftover, overruns): CAPTURE order.
+ * Real users approve on PayPal; demo users pay server-side with the sandbox test card.
+ */
+export async function createCheckout(opts: { cents: number; customId: string; description: string; returnUrl: string; cancelUrl: string }) {
+  const { result } = await orders().createOrder({
+    paypalRequestId: randomUUID(),
+    body: {
+      intent: CheckoutPaymentIntent.Capture,
+      purchaseUnits: [{ customId: opts.customId, description: opts.description, amount: usd(opts.cents) }],
+      paymentSource: {
+        paypal: {
+          experienceContext: {
+            brandName: "Kitty",
+            shippingPreference: PaypalWalletContextShippingPreference.NoShipping,
+            userAction: PaypalExperienceUserAction.PayNow,
+            returnUrl: opts.returnUrl,
+            cancelUrl: opts.cancelUrl,
+          },
+        },
+      },
+    },
+  });
+  const approveUrl = result.links?.find((l) => l.rel === "payer-action" || l.rel === "approve")?.href;
+  if (!result.id || !approveUrl) throw new Error("PayPal did not return an approval link");
+  return { orderId: result.id, approveUrl };
+}
+
+export async function captureCheckout(orderId: string) {
+  const { result } = await orders().captureOrder({ id: orderId, paypalRequestId: randomUUID() });
+  const cap = result.purchaseUnits?.[0]?.payments?.captures?.[0];
+  return { captureId: cap?.id, status: cap?.status, cents: cap?.amount ? Math.round(Number(cap.amount.value) * 100) : 0, customId: result.purchaseUnits?.[0]?.customId };
+}
+
+export async function testCardPayment(opts: { cents: number; customId: string }) {
+  const { result } = await orders().createOrder({
+    paypalRequestId: randomUUID(),
+    body: {
+      intent: CheckoutPaymentIntent.Capture,
+      purchaseUnits: [{ customId: opts.customId, amount: usd(opts.cents) }],
+      paymentSource: { card: SANDBOX_TEST_CARD },
+    },
+  });
+  const cap = result.purchaseUnits?.[0]?.payments?.captures?.[0];
+  if (cap?.id) return { orderId: result.id!, captureId: cap.id, status: cap.status };
+  const done = await captureCheckout(result.id!);
+  return { orderId: result.id!, captureId: done.captureId, status: done.status };
+}
+
 /** Partial or full refund of a capture (leftovers, tag-alongs, dropouts). */
 export async function refundCapture(captureId: string, cents: Cents) {
   const { result } = await payments().refundCapturedPayment({

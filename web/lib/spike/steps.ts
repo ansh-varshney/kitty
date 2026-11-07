@@ -5,7 +5,7 @@ import { getPayout, sendPayout } from "../paypal/payouts";
 import { createProduct, createQuantityPlan, createSubscription, getSubscription } from "../paypal/subscriptions";
 import { ensureWebhook, simulateWebhook } from "../paypal/webhooks";
 import { loginUrl } from "../paypal/login";
-import { generate, generateJson } from "../ai/gemini";
+import { generate, generateJson } from "../ai/llm";
 import { db } from "../db";
 import { baseUrl, env } from "../env";
 import { toCents } from "../money";

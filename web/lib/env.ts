@@ -7,7 +7,9 @@ const schema = z.object({
   PAYPAL_CLIENT_ID: z.string().min(10),
   PAYPAL_CLIENT_SECRET: z.string().min(10),
   PAYPAL_ENVIRONMENT: z.enum(["SANDBOX"]).default("SANDBOX"),
-  GEMINI_API_KEY: z.string().min(10),
+  // AI keys are optional: the kitten uses whichever are set (Groq first, then Gemini), and code fallbacks when none answer.
+  GROQ_API_KEY: z.string().min(10).optional(),
+  GEMINI_API_KEY: z.string().min(10).optional(),
   DATABASE_URL: z.string().optional(),
   DEV_CONSOLE_KEY: z.string().min(8).optional(),
   PAYPAL_WEBHOOK_ID: z.string().optional(),
@@ -22,7 +24,9 @@ let cached: Env | undefined;
 /** Validated server-side env. Throws a readable error listing what's missing (never the values). */
 export function env(): Env {
   if (cached) return cached;
-  const parsed = schema.safeParse(process.env);
+  // A blank setting means "not set" (a left-empty field on Render, or the local open dev console).
+  const present = Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined && v.trim() !== ""));
+  const parsed = schema.safeParse(present);
   if (!parsed.success) {
     const names = parsed.error.issues.map((i) => i.path.join(".")).join(", ");
     throw new Error(`Missing or invalid environment variables: ${names}`);

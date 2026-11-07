@@ -11,6 +11,6 @@ export function loadEnv(): void {
   if (loaded) return;
   loaded = true;
   for (const file of [path.resolve(process.cwd(), "..", ".env"), path.resolve(process.cwd(), ".env.local")]) {
-    if (fs.existsSync(file)) process.loadEnvFile(file);
+    if (fs.existsSync(/*turbopackIgnore: true*/ file)) process.loadEnvFile(file);
   }
 }

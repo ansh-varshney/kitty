@@ -40,8 +40,10 @@ export default function DevConsole() {
 
   useEffect(() => {
     const k = readKey();
-    setKey(k);
-    void load(k);
+    void Promise.resolve().then(() => {
+      setKey(k);
+      return load(k);
+    });
   }, [load]);
 
   async function run(name: string) {

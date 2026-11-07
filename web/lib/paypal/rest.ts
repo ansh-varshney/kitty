@@ -33,6 +33,7 @@ export async function getAppToken(fetchImpl: typeof fetch = fetch): Promise<stri
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: "grant_type=client_credentials",
+    signal: AbortSignal.timeout(PAYPAL_TIMEOUT_MS),
   });
   if (!res.ok) throw new PayPalError(`PayPal token request failed`, res.status);
   const json = (await res.json()) as { access_token: string; expires_in: number };
@@ -46,6 +47,9 @@ export function resetTokenCache() {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Per attempt. The sandbox sometimes stalls (Phase 1: a 30 s hang); a stalled call is retried, never waited on forever. */
+export const PAYPAL_TIMEOUT_MS = 15_000;
+
 export async function paypalRequest<T = unknown>(
   method: "GET" | "POST" | "PATCH" | "DELETE",
   path: string,
@@ -55,17 +59,29 @@ export async function paypalRequest<T = unknown>(
   const requestId = method === "POST" ? (opts.requestId ?? randomUUID()) : undefined;
   let lastErr: unknown;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const accessToken = await getAppToken(fetchImpl);
-    const res = await fetchImpl(`${PAYPAL_API_BASE}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-        ...(requestId ? { "PayPal-Request-Id": requestId } : {}),
-        ...opts.headers,
-      },
-      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-    });
+    let res: Response;
+    try {
+      const accessToken = await getAppToken(fetchImpl);
+      res = await fetchImpl(`${PAYPAL_API_BASE}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          ...(requestId ? { "PayPal-Request-Id": requestId } : {}),
+          ...opts.headers,
+        },
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        signal: AbortSignal.timeout(PAYPAL_TIMEOUT_MS),
+      });
+    } catch (err) {
+      // Timeout or dropped connection. Safe to retry: GETs read, and every POST reuses its PayPal-Request-Id,
+      // so PayPal treats the retry as the same request (no double charge or payout).
+      if (err instanceof PayPalError) throw err;
+      lastErr = new PayPalError(`${method} ${path} → no answer (${(err as Error).name}: ${(err as Error).message})`, 0);
+      if (attempt === 3 || method === "PATCH" || method === "DELETE") throw lastErr;
+      await sleep(400 * 2 ** (attempt - 1));
+      continue;
+    }
     if (res.status === 204) return undefined as T;
     const text = await res.text();
     const json = text ? safeJson(text) : undefined;

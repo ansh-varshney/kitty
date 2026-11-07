@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import "../env";
 
@@ -6,12 +7,16 @@ import "../env";
  * Database adapter (PRD §C4):
  * - Render Postgres in production (DATABASE_URL set)
  * - PGlite (embedded Postgres, zero setup) for local development and tests
- * Same SQL on both.
+ * Same SQL on both. `tx()` runs a function inside one transaction (money moves are all-or-nothing).
  */
 
-export interface Db {
+export interface Queryable {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+}
+
+export interface Db extends Queryable {
   exec(sql: string): Promise<void>;
+  tx<T>(fn: (q: Queryable) => Promise<T>): Promise<T>;
   kind: "postgres" | "pglite";
 }
 
@@ -20,6 +25,11 @@ let dbPromise: Promise<Db> | undefined;
 export function db(): Promise<Db> {
   dbPromise ??= open();
   return dbPromise;
+}
+
+/** Test helper: point the adapter at a fresh in-memory database. */
+export function resetDbForTests() {
+  dbPromise = undefined;
 }
 
 async function open(): Promise<Db> {
@@ -42,12 +52,33 @@ async function openPostgres(url: string): Promise<Db> {
     async exec(sql) {
       await pool.query(sql);
     },
+    async tx(fn) {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        const out = await fn({
+          async query(sql, params) {
+            const res = await client.query(sql, params as unknown[] | undefined);
+            return res.rows;
+          },
+        });
+        await client.query("commit");
+        return out;
+      } catch (err) {
+        await client.query("rollback");
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
   };
 }
 
 async function openPglite(): Promise<Db> {
   const { PGlite } = await import("@electric-sql/pglite");
-  const dir = process.env.PGLITE_DIR ?? path.join(process.cwd(), ".pglite");
+  // Kept OUTSIDE the project: Next's dev watcher can't ignore folders and reloads on every database write.
+  const dir = process.env.PGLITE_DIR ?? path.join(os.homedir(), ".kitty-dev", "pglite");
+  if (dir !== "memory") fs.mkdirSync(dir, { recursive: true });
   const pg = dir === "memory" ? new PGlite() : new PGlite(dir);
   await pg.waitReady;
   return {
@@ -58,6 +89,16 @@ async function openPglite(): Promise<Db> {
     },
     async exec(sql) {
       await pg.exec(sql);
+    },
+    async tx(fn) {
+      return pg.transaction(async (t) =>
+        fn({
+          async query(sql, params) {
+            const res = await t.query(sql, params as unknown[] | undefined);
+            return res.rows as never[];
+          },
+        }),
+      );
     },
   };
 }
