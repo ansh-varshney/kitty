@@ -15,7 +15,7 @@ import { toCents } from "../money";
  * plain data for the dev console. Nothing here shows secrets.
  */
 
-export type StepResult = { ok: boolean; summary: string; data?: unknown; needsYou?: { label: string; url: string } };
+export type StepResult = { ok: boolean; skipped?: boolean; summary: string; data?: unknown; needsYou?: { label: string; url: string } };
 type Step = { title: string; auto: boolean; run: () => Promise<StepResult> };
 
 const DEMO_PAYOUT_EMAIL = process.env.SPIKE_PAYOUT_EMAIL ?? "shopper.av26@personal.example.com";
@@ -143,7 +143,13 @@ export const STEPS: Record<string, Step> = {
     auto: false,
     run: async () => {
       const base = baseUrl();
-      if (!base.startsWith("https://")) return { ok: false, summary: `Needs a public https URL; this app runs at ${base}. Run it on Render.` };
+      if (!base.startsWith("https://")) {
+        return {
+          ok: false,
+          skipped: true,
+          summary: "Only works on the live (Render) site: PayPal can't send events to localhost. Expected here.",
+        };
+      }
       const id = env().PAYPAL_WEBHOOK_ID ?? (await ensureWebhook(`${base}/api/paypal/webhook`));
       const sim = await simulateWebhook(id, "PAYMENT.CAPTURE.COMPLETED");
       return { ok: true, summary: `Webhook ${id} registered; test event ${sim.id} sent. Check the webhook log below in a few seconds.`, data: { webhookId: id } };

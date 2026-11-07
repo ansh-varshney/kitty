@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
-type StepResult = { ok: boolean; summary: string; data?: unknown; needsYou?: { label: string; url: string } };
+type StepResult = { ok: boolean; skipped?: boolean; summary: string; data?: unknown; needsYou?: { label: string; url: string } };
 type StepInfo = { name: string; title: string; auto: boolean; latest: { ok: boolean; result: StepResult; created_at: string } | null };
 type Webhook = { event_type: string; verified: boolean; received_at: string };
 
@@ -104,7 +104,10 @@ export default function DevConsole() {
               {r && (
                 <div className="mt-2 text-sm">
                   <p>
-                    <span className={r.ok ? "text-emerald-700" : "text-red-700"}>{r.ok ? "PASS" : "FAIL"}</span> · {r.summary}
+                    <span className={r.skipped ? "text-neutral-500" : r.ok ? "text-emerald-700" : "text-red-700"}>
+                      {r.skipped ? "SKIPPED" : r.ok ? "PASS" : "FAIL"}
+                    </span>{" "}
+                    · {r.summary}
                   </p>
                   {r.needsYou && (
                     <a className="mt-1 inline-block text-indigo-700 underline" href={r.needsYou.url}>

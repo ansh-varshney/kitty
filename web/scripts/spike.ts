@@ -19,8 +19,8 @@ async function main() {
     const t0 = Date.now();
     const r = await runStep(name);
     results[name] = r;
-    if (!r.ok) failed++;
-    console.log(`${r.ok ? "PASS" : "FAIL"}  ${name.padEnd(14)} ${String(Date.now() - t0).padStart(6)} ms  ${r.summary}`);
+    if (!r.ok && !r.skipped) failed++;
+    console.log(`${r.skipped ? "SKIP" : r.ok ? "PASS" : "FAIL"}  ${name.padEnd(14)} ${String(Date.now() - t0).padStart(6)} ms  ${r.summary}`);
     if (r.needsYou) console.log(`      needs you: ${r.needsYou.label}`);
     if (!r.ok && r.data) console.log("      details:", JSON.stringify(r.data).slice(0, 600));
   }
