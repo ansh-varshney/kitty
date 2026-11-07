@@ -1,0 +1,35 @@
+# Render Blueprint for Kitty (PRD §C4). Uses sponsor credits: paid instances never sleep.
+databases:
+  - name: kitty-db
+    plan: basic-256mb
+    databaseName: kitty
+    user: kitty
+
+services:
+  - type: web
+    name: kitty-web
+    runtime: node
+    plan: starter
+    rootDir: web
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kitty-db
+          property: connectionString
+      - key: PAYPAL_ENVIRONMENT
+        value: SANDBOX
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DEV_CONSOLE_KEY
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false

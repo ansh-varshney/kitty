@@ -1,0 +1,30 @@
+# Secrets: never commit
+.env
+.env.*
+!.env.example
+sandbox-accounts*.csv
+sandbox-friends*.csv
+
+# Old drafts and planning material
+_superseded/
+
+# Dependencies and builds
+node_modules/
+web/.next/
+web/out/
+web/next-env.d.ts
+web/*.tsbuildinfo
+
+# Local data and spike output
+web/.pglite/
+web/.spike/
+
+# PRD build leftovers
+prd-source/_build.html
+prd-source/_pass1.pdf
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
