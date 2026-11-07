@@ -1,7 +1,7 @@
 # Kitty: PayPal AI Hackathon ("Build What's Next with PayPal and AI", Devpost)
 
 ## Source of truth: ALWAYS the latest PRD
-- The **only** current spec is the newest `Kitty-PRD-v*.pdf` in this folder: the highest version number (v1.3 as of 7 Nov 2026).
+- The **only** current spec is the newest `Kitty-PRD-v*.pdf` in this folder: the highest version number (v1.4 as of 7 Nov 2026).
 - Its exact text is `prd-source/Kitty-PRD.md`. **Read that file for any spec question**: it's the same content and easier to search. Check its title line ("Version X.Y") and the change log (§E3) to confirm you have the newest version.
 - **Never** use anything in `_superseded/` (old PRDs v1.0–v1.1, early ideation files). They are out of date.
 - Requirement IDs (`FR-…`, `NFR-…`, `AT-…`) are the build spec. Reference them in code and commits.
@@ -20,6 +20,13 @@
   2. Give the owner a plain-language report: what was built, how, the architecture.
   3. Give numbered steps for the owner to test it themselves.
   4. Record the key findings in PRD §D8.
+
+## Hosting (Render)
+- Render currently runs on **free** plans: the app sleeps after 15 min idle, and the free database **expires ~7 Dec 2026**.
+- **Phase 5, before submitting:**
+  1. The owner adds a card in Render. Never enter card details yourself.
+  2. Upgrade in place to web **Starter** + database **Basic 256 MB**. Usage comes out of Render credits.
+  3. Confirm `/api/health`.
 
 ## Code
 - The repo root is this folder. The app is in `web/` (Next.js 16; read `web/AGENTS.md`: the APIs changed).

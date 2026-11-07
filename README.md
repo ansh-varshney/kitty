@@ -4,7 +4,7 @@
 
 Kitty helps friends plan, pay and save together without anyone fronting money, chasing debts or overspending. Every user adopts a kitten: a personal AI agent that speaks for them in their friend groups, keeps their budget private, and moves money on PayPal only within the rules they set.
 
-Built for the *Build What's Next with PayPal and AI* hackathon (Devpost). Status: **Phase 0 (setup and spikes)**. The full spec is the PRD: [`Kitty-PRD-v1.3.pdf`](Kitty-PRD-v1.3.pdf) (source in `prd-source/`).
+Built for the *Build What's Next with PayPal and AI* hackathon (Devpost). Status: **Phase 0 (setup and spikes)**. The full spec is the PRD: [`Kitty-PRD-v1.4.pdf`](Kitty-PRD-v1.4.pdf) (source in `prd-source/`).
 
 ## Repository layout
 

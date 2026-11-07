@@ -1,6 +1,6 @@
 # Kitty: Product Requirements Document
 
-**Version 1.3 · 7 Nov 2026 · Status: IN BUILD (Phase 0 done; detail passes per feature during the build)**
+**Version 1.4 · 7 Nov 2026 · Status: IN BUILD (Phase 0 done; detail passes per feature during the build)**
 Owner: Ansh Varshney (solo) · Hackathon: *Build What's Next with PayPal and AI* (Devpost) · Deadline: Thu 12 Nov 2026, 12:00 PM PT (Fri 13 Nov, 1:30 AM IST)
 
 > This PRD is the **single source of truth** for the build. Requirement IDs (`FR-…`, `NFR-…`, `AT-…`) are the build spec. To change the spec: edit `prd-source/Kitty-PRD.md`, bump the version in `prd-source/build.py`, add a row to the change log (§E3), and rebuild the PDF with `python prd-source/build.py`.
@@ -1365,8 +1365,8 @@ Free-tier facts (5 Nov): Pro models have 0 quota; `gemini-2.5-*` return 404 for 
 | Layer | Choice | Why |
 |---|---|---|
 | App | **Next.js (TypeScript)**, Tailwind, Framer Motion | One codebase for UI + API |
-| Hosting | **Render web service on a paid instance** (sponsor credits) | Free instances sleep after 15 min; judging runs to 15 Dec |
-| Database | **Render Postgres** | Render-first; no 7-day pause |
+| Hosting | **Render web service**: **free** plan while building; upgraded to **Starter** (paid from sponsor credits; needs a card on file) in Phase 5 | Free instances sleep after 15 min idle; judging runs to 15 Dec |
+| Database | **Render Postgres**: **free** while building; upgraded in place to **Basic 256 MB** in Phase 5 | A free Render database expires 30 days after creation (~7 Dec) |
 | Live updates | Server-sent events from the app + Postgres LISTEN/NOTIFY | No extra service |
 | Jobs | **Render Workflows** (TypeScript SDK, public beta) for durable jobs: deadlines, Meows, Kitty Party checks, Catnip clean-up, Demo World reseed. Fallback: Render Cron Jobs. | Sponsor prize angle |
 | Auth | Log in with PayPal (fallback: email + password) | Verified payout email in one step |
@@ -1444,7 +1444,7 @@ Kitty/                      repo root (git)
 | **2. Backend non-core** | Mon 9 Nov | "I paid" cards, Yarn, Untangle (§B11) · Nine Lives (§B12) · Kitty Party with per-person savings (§B13) · Catnip with auto-delete (§B14) · The Bowl (§B15) · Meows + alerts (§B16) · purrs, tags, Top Cat, streaks (§B17) · My Month data (§B20) · remaining chat tools (§B18) · Render Workflows jobs: deadlines, Meows, party checks, Catnip clean-up · export: MCP, calendar feed, CSV (§B21) | AT-13, AT-17, AT-18, AT-24 pass; scheduled jobs run on Render |
 | **3. Frontend and UI** | Tue 10 Nov | The simple 5-tab app (§B22): Meows · Squads (rooftop, Chat, Plans, Yarn, Party, Bowl, My settings) · "+" (whim, I paid, ask for help) · My Month (money + calendar) · My Kitten (rules, Treat Jar, Diary, help requests). Sign-up's 5 pages. The SVG kitten (base + variants). Simple money-moment animations. Mobile at 375 px. | Every Phase 1–2 flow works from the real screens on a phone |
 | **4. Demo World, video and polish** | Wed 11 Nov | Demo World: seed, "let the squad respond", nightly reseed, pre-generated text (§B23) · design polish on the screens the video shows · video script, recording, edit, YouTube upload · README (setup, sandbox login, AI tools, path to production) | AT-20 passes; the video is uploaded; the README is complete |
-| **5. Submit** | Thu 12 Nov | Buffer for fixes; Devpost entry (description, built with, AI tools, links); final checks; APIMatic claim form | Submitted by evening IST (hard deadline Fri 13 Nov, 01:30 IST) |
+| **5. Submit** | Thu 12 Nov | **Upgrade Render first:** the owner adds a card in Render; we switch `render.yaml` (or the dashboard) to web **Starter** + database **Basic 256 MB**, upgraded in place so data is kept; confirm `/api/health` and that the app no longer sleeps. Then: buffer for fixes; make the GitHub repo public; Devpost entry (description, built with, AI tools, links); final checks; APIMatic claim form. | Render on paid plans (awake, database won't expire); submitted by evening IST (hard deadline Fri 13 Nov, 01:30 IST) |
 
 **Coverage check:** every feature in Part B has a phase:
 - Phase 1: §B1–B10, §B18 core, §B19 log, §B20 checks.
@@ -1474,7 +1474,7 @@ The 3-minute script is written on Mon 9 Nov, once the core loop runs, so the des
 | Scope is still large for one person | P0/P1/P2 tiers; P2 can be cut without breaking the story |
 | PayPal popups / Log in with PayPal on the hosted domain | Day-1 spike; fallback email + password |
 | Demo World holds expire during judging | Nightly reseed (Workflows / Cron); test-card holds or clearly labelled simulated holds |
-| Render free instances sleep; free databases pause | Paid instance + Render Postgres on sponsor credits |
+| Render free instances sleep; the free database expires ~7 Dec | Build on free plans; **upgrade to paid (card + credits) in Phase 5**, before submitting |
 | Gemini free-tier limits with several judges | Flash-Lite first, pre-generated Demo World text, templates as fallback |
 | Overclaiming "agents negotiate" | Pitch it honestly: kittens speak for you; a neutral referee decides (§B7) |
 | Small squads make sit-outs guessable | Promise "never shown", not "never known" |
@@ -1573,7 +1573,7 @@ The 3-minute script is written on Mon 9 Nov, once the core loop runs, so the des
 **Open (owner steps):**
 - Upload `sandbox-friends-us.csv` (6 accounts)
 - Enable Log in with PayPal + return URLs
-- Deploy the Render Blueprint (paid instance + Postgres from credits)
+- Deploy the Render Blueprint. Render asked for a card for paid plans, so we start on **free** plans and upgrade in Phase 5. Log in with PayPal also needs this live https URL: PayPal rejects `localhost` return URLs.
 - Register the webhook on the hosted URL
 
 ## D9 README must include
@@ -1643,3 +1643,4 @@ The 3-minute script is written on Mon 9 Nov, once the core loop runs, so the des
 | 1.1 | 6 Nov 2026 | Problem reframed: plan together **and** don't overspend. Added My Month, the overspending guard, "I paid" cards, uneven splits, Export (MCP/calendar/CSV), and a Tilt / Money Pools lessons section. Sign-up is 5 required pages with Log in with PayPal, gender, birth date and a House Rules template. House Rules cut to R1–R8 + guarded personal rules + per-squad rules. No growth stages. Kitten always gets a one-tap confirmation on plans; friend's kitten asks its owner when unsure. Whims cut to 4 fields; plan card simplified. Kitty Party is now squad savings used first for plans. Catnip is opt-in via the birthday person's kitten, auto-deleted after 3 days. Doorstep renamed Meows. Paw-up and cover funding defined; rounding rule + money-balance invariant; tag-along maths fixed. Demo World: one login, simulated squad, nightly reseed. Speed-first models. Render-first stack. **Cut:** Scaredy Cat, Prowl, Habits, growth stages, race rule, seat swap, Squad Jar, benchmarks, push, email, i18n. No emojis in the product UI. |
 | 1.2 | 6 Nov 2026 | Treat Jar / free hand / fun budget explained; "always ask above" merged into free hand (rules now R1–R7). Interests (pick 3+) on sign-up page 2. My Month gains a small calendar; no double booking (FR-CAL). Whims to chosen friends create mini-squads. The floater sets "need at least" (default half), also the Pounce minimum. Plan changes: kittens suggest, 2-round loop guard, owners always tap; host edits apply, members' edits become suggestions. Kitty Party savings tracked per person with a worked example; leftovers return to their source. Build plan split into Phases 0–5 with exit criteria and a cut order; development starts on the owner's go. New AT-21 to AT-24. |
 | 1.3 | 7 Nov 2026 | Phase 0 built. Added the phase-report rule (§D1 step 5) and the Phase log (§D8) with spike results: server-side test-card holds work with no popup; partial capture, partial refund, void, payouts, quantity subscriptions OK; Gemini Flash-Lite ~1.3 s. Repo layout updated to the as-built tree (§C5): repo root = Kitty folder, app in web/. README requirements renumbered to §D9. |
+| 1.4 | 7 Nov 2026 | Render runs on free plans while building (Render needs a card for paid plans). Phase 5 now starts with: owner adds a card, upgrade in place to web Starter + Postgres Basic 256 MB, make the repo public (§D1, §C4, §D4). Phase log notes Log in with PayPal needs the live https URL (§D8). |

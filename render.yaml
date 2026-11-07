@@ -1,7 +1,12 @@
-# Render Blueprint for Kitty (PRD §C4). Uses sponsor credits: paid instances never sleep.
+# Render Blueprint for Kitty (PRD §C4).
+# Build phase: FREE plans (no card needed). The web app sleeps after 15 min idle (~1 min to wake),
+# and the free database expires 30 days after creation (~7 Dec 2026).
+# Phase 5 (before submitting): add a card in Render and upgrade in place to
+#   web: starter   database: basic-256mb
+# so the demo stays awake and the data survives judging (1–15 Dec). Usage is paid from Render credits.
 databases:
   - name: kitty-db
-    plan: basic-256mb
+    plan: free
     databaseName: kitty
     user: kitty
 
@@ -9,7 +14,7 @@ services:
   - type: web
     name: kitty-web
     runtime: node
-    plan: starter
+    plan: free
     rootDir: web
     buildCommand: npm ci && npm run build
     startCommand: npm run start
