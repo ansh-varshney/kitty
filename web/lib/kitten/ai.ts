@@ -291,7 +291,7 @@ export async function readReceipt(imageBase64: string, mimeType = "image/png"): 
 
 // ---------------------------------------------------------------- chat + friend questions
 
-export const CHAT_TOOLS = ["create_whim", "my_plans", "my_jar", "my_month", "add_rule", "ask_friend", "explain", "chitchat"] as const;
+export const CHAT_TOOLS = ["create_whim", "my_plans", "my_jar", "my_month", "add_rule", "ask_friend", "explain", "log_i_paid", "my_yarn", "untangle", "ask_for_help", "my_party", "top_up_jar", "chitchat"] as const;
 export type ChatTool = (typeof CHAT_TOOLS)[number];
 
 /** Message → exactly one tool from a fixed list (FR-CHAT-1). Code validates and runs it. */
@@ -301,7 +301,9 @@ export async function chatIntent(message: string, friends: string[]): Promise<{ 
       `You route a user's message to ONE tool. Tools: create_whim(text) = they want to plan something with friends; ` +
         `my_plans() = asks about their plans; my_jar() = Treat Jar balance; my_month() = their spending this month; ` +
         `add_rule(text) = they state a rule for you; ask_friend(friend, question) = ask a friend's kitten something (friends: ${friends.join(", ") || "none"}); ` +
-        `explain() = "why did you do that"; chitchat(reply) = anything else (reply briefly as a friendly kitten, no emojis; never define app words, money terms or rules yourself). ` +
+        `explain() = "why did you do that"; log_i_paid(dollars, note, friends) = they paid for something for friends (friends = comma-separated names); ` +
+        `my_yarn() = who owes whom, what do I owe; untangle() = settle up the squad's Yarn; ask_for_help(dollars, note) = they need money help from friends; ` +
+        `my_party() = their Kitty Party savings; top_up_jar(dollars) = add money to the Treat Jar; chitchat(reply) = anything else (reply briefly as a friendly kitten, no emojis; never define app words, money terms or rules yourself). ` +
         `Return JSON {"tool": name, "args": {...strings}}.\n` +
         UNTRUSTED("MESSAGE", message),
       { tier: "fast", timeoutMs: 4000, deadlineMs: 5000 },
@@ -318,7 +320,11 @@ export function keywordIntent(message: string, friends: string[]): { tool: ChatT
   const m = message.toLowerCase();
   const friend = friends.find((f) => m.includes(f.toLowerCase()));
   if (friend && /kitten|ask/.test(m)) return { tool: "ask_friend", args: { friend, question: message } };
+  if (/\b(top ?up|add)\b.*\bjar\b/.test(m)) return { tool: "top_up_jar", args: { dollars: (/\$?(\d+(?:\.\d{1,2})?)/.exec(m) ?? [])[1] ?? "" } };
   if (/treat\s?jar|\bjar\b|allowance/.test(m)) return { tool: "my_jar", args: {} };
+  if (/\buntangle\b|settle up/.test(m)) return { tool: "untangle", args: {} };
+  if (/\bowe\b|\byarn\b/.test(m)) return { tool: "my_yarn", args: {} };
+  if (/kitty party|\bsavings?\b|\bsaved\b/.test(m)) return { tool: "my_party", args: {} };
   if (/spent|spend|budget|this month|my month/.test(m)) return { tool: "my_month", args: {} };
   if (/\bplans?\b|what'?s on|coming up/.test(m)) return { tool: "my_plans", args: {} };
   if (/why did you|what did you do/.test(m)) return { tool: "explain", args: {} };

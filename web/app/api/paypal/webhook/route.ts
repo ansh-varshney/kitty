@@ -1,5 +1,7 @@
 import { verifyWebhook } from "@/lib/paypal/webhooks";
 import { db } from "@/lib/db";
+import { creditFromWebhook } from "@/lib/core/party";
+import { creditBowlFromWebhook } from "@/lib/core/bowl";
 
 /**
  * PayPal webhook receiver (FR-SEC-7, FR-PP-2): verify first, store once (event id is unique),
@@ -27,5 +29,14 @@ export async function POST(req: Request) {
     `insert into webhook_events (event_id, event_type, verified, payload) values ($1, $2, $3, $4) on conflict (event_id) do nothing`,
     [event.id ?? null, event.event_type ?? "UNKNOWN", verified, raw],
   );
-  return Response.json({ received: true, verified });
+  // Subscription payments (Kitty Party savings, Bowl shares): only from VERIFIED events (FR-SEC-7).
+  let credited: boolean | undefined;
+  if (verified && event.event_type === "PAYMENT.SALE.COMPLETED") {
+    const r = (event as { resource?: { id?: string; billing_agreement_id?: string; amount?: { total?: string } } }).resource;
+    const cents = Math.round(Number(r?.amount?.total ?? 0) * 100);
+    if (r?.billing_agreement_id && r.id && cents > 0) {
+      credited = (await creditFromWebhook(r.billing_agreement_id, cents, r.id)) || (await creditBowlFromWebhook(r.billing_agreement_id, cents, r.id));
+    }
+  }
+  return Response.json({ received: true, verified, credited });
 }

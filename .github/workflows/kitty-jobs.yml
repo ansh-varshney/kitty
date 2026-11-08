@@ -1,0 +1,26 @@
+# Kitty's scheduled jobs (PRD §D1 Phase 2): deadlines, Yarn reminders, Kitty Party and Bowl cycles, Catnip radar and
+# clean-up, purrs. Render cron jobs need a paid plan, so a free GitHub Actions schedule calls the app's jobs endpoint.
+# It also wakes the free Render instance. Needs the repository secret KITTY_JOBS_KEY (= JOBS_KEY on Render).
+name: Kitty jobs
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+permissions: {}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run Kitty's jobs
+        env:
+          JOBS_KEY: ${{ secrets.KITTY_JOBS_KEY }}
+        run: |
+          # Until the owner adds the secret, skip quietly (no failure email every 15 minutes).
+          if [ -z "$JOBS_KEY" ]; then echo "::notice::KITTY_JOBS_KEY secret is not set yet, so the jobs were skipped."; exit 0; fi
+          for attempt in 1 2 3; do
+            code=$(curl -s -o out.json -w "%{http_code}" --max-time 120 -X POST -H "x-jobs-key: $JOBS_KEY" https://kitty-web.onrender.com/api/v1/jobs/run || true)
+            if [ "$code" = "200" ]; then cat out.json; exit 0; fi
+            echo "attempt $attempt: HTTP $code (the free instance may be waking up)"; sleep 30
+          done
+          exit 1

@@ -1,7 +1,7 @@
 # Kitty: PayPal AI Hackathon ("Build What's Next with PayPal and AI", Devpost)
 
 ## Source of truth: ALWAYS the latest PRD
-- The **only** current spec is the newest `Kitty-PRD-v*.pdf` in this folder: the highest version number (v1.12 as of 7 Nov 2026; note 1.10+ is newer than 1.9).
+- The **only** current spec is the newest `Kitty-PRD-v*.pdf` in this folder: the highest version number (v1.15 as of 8 Nov 2026; note 1.10+ is newer than 1.9).
 - Its exact text is `prd-source/Kitty-PRD.md`. **Read that file for any spec question**: it's the same content and easier to search. Check its title line ("Version X.Y") and the change log (§E3) to confirm you have the newest version.
 - **Never** use anything in `_superseded/` (old PRDs v1.0–v1.1, early ideation files). They are out of date.
 - Requirement IDs (`FR-…`, `NFR-…`, `AT-…`) are the build spec. Reference them in code and commits.
@@ -14,6 +14,8 @@
 ## Status
 - **Phase 0 is complete** (7 Nov 2026). Live app: https://kitty-web.onrender.com (Render free plans). PayPal webhook ID (ID in `.env` as `PAYPAL_WEBHOOK_ID`).
 - **Phase 1 (backend core) is complete** (7 Nov 2026): `npm run accept:phase1` 24/24 on the real sandbox with Groq as the AI (after the owner funded the sandbox business account). Findings are in PRD §D8 "Phase 1: results". Not yet pushed to Render unless the owner said so.
+- **Phase 2 (backend non-core) is built and tested** (7 Nov 2026): `npm run accept:phase2` 12/12 (AT-13, AT-17, AT-18, AT-24 + Bowl, Meows, purrs, My Month, chat, export, jobs). Scheduled jobs: `POST /api/v1/jobs/run` with `x-jobs-key` (JOBS_KEY), called every 15 min by `.github/workflows/kitty-jobs.yml` (secret KITTY_JOBS_KEY).
+- **Edge-case pass (8 Nov 2026):** `npm run test:edges` 80/80 (baseline 22/74). Added undo actions (withdraw whim, cancel plan, remove/fix card, take back pledge, close Bowl, leave squad), no-overdraw ledger, one-at-a-time money actions (`lib/core/locks.ts`, single web instance), migration 006. Findings in PRD §D8. Not yet committed unless the owner said so.
 - The next phase starts only when the owner says so. Phases (PRD §D1): 0 setup → 1 backend core → 2 backend non-core → 3 simple 5-tab app → 4 Demo World, video, polish → 5 submit.
 - Before building each feature, do a short detail pass and record it in the PRD as a minor version.
 - **After every phase:**
@@ -35,7 +37,8 @@
   - `npm test`: unit tests
   - `npm run spike`: live sandbox checks
   - `npm run dev`: http://localhost:3000; backend playground at `/dev/play`, Phase 0 checks at `/dev`
-  - `npm run accept:phase1`: end-to-end acceptance on a fresh in-memory DB (real sandbox + Groq/Gemini, ~5 min)
+  - `npm run accept:phase1` / `npm run accept:phase2`: end-to-end acceptance on a fresh in-memory DB (real sandbox + Groq/Gemini, ~5–8 min each)
+  - `npm run test:edges`: ~80 edge cases (undo after others acted, double taps, leaving, timers twice, no overdrawn money); ~2 min
   - `npm run timing:nfr1`: whim → prepared answers speed (NFR-1: 5 s)
 - Local DB = PGlite in `~/.kitty-dev/pglite` (outside the repo, so the dev watcher ignores it; `PGLITE_DIR` overrides); production = Render Postgres (`DATABASE_URL`).
 - Money is integer cents only (`web/lib/money.ts`). The PayPal Server SDK handles Orders and Payments; REST (`web/lib/paypal/rest.ts`) handles Payouts, Subscriptions, Webhooks and Login.

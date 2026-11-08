@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Phase2 from "./phase2";
 
 /** A plain test bench for the /api/v1 backend. Not product UI. */
 
@@ -59,6 +60,7 @@ export default function Playground() {
   const [receiptId, setReceiptId] = useState("");
   const [receiptTotal, setReceiptTotal] = useState("");
   const [whimNeed, setWhimNeed] = useState("");
+  const [lastWhim, setLastWhim] = useState("");
   const [splitMode, setSplitMode] = useState<"equal" | "custom" | "weights">("equal");
   const [splitWho, setSplitWho] = useState("");
   const [splitValue, setSplitValue] = useState("");
@@ -222,9 +224,9 @@ export default function Playground() {
         <button
           className={btn}
           disabled={!actAs || !!busy}
-          onClick={() => {
+          onClick={async () => {
             const needAtLeast = whimNeed.trim() ? Number(whimNeed) : undefined;
-            void act(
+            const r = await call(
               "POST",
               "whims",
               whimImage
@@ -232,9 +234,15 @@ export default function Playground() {
                 : { squadId: whimSquad, text: whimText, needAtLeast },
               "float whim",
             );
+            const id = (r.json as { whimId?: string }).whimId;
+            if (id) setLastWhim(id);
+            await refresh();
           }}
         >
           Float it {whimImage ? `(with ${whimImage.name})` : ""}
+        </button>
+        <button className={btn2} disabled={!lastWhim || !!busy} onClick={() => void act("POST", `whims/${lastWhim}/withdraw`, {}, "withdraw my whim")}>
+          Withdraw my last whim
         </button>
       </section>
 
@@ -347,6 +355,9 @@ export default function Playground() {
               <button className={btn2} onClick={() => void act("POST", `plans/${plan.id}/pounce`, {}, "Pounce (host)")}>
                 Pounce (host)
               </button>
+              <button className={btn2} onClick={() => void act("POST", `plans/${plan.id}/cancel`, {}, "cancel plan (host)")}>
+                Cancel plan (host)
+              </button>
               <button className={btn2} onClick={() => void act("POST", `plans/${plan.id}/respond`, { status: "out" }, "I'm out")}>
                 I&apos;m out
               </button>
@@ -452,6 +463,8 @@ export default function Playground() {
           <pre>{routes.join("\n")}</pre>
         </details>
       </section>
+
+      <Phase2 call={call} act={act} actAs={actAs} squadId={whimSquad} users={users.filter((u) => u.is_demo).map((u) => ({ id: u.id, name: u.name }))} />
 
       <section className={box + " md:col-span-2"}>
         <h2 className="font-semibold">

@@ -4,7 +4,7 @@ import { db } from "@/lib/db";
 /** Render health check: app is up and the database answers. Shows which settings exist, never their values. */
 export async function GET() {
   await connection();
-  const names = ["PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "GROQ_API_KEY", "GEMINI_API_KEY", "DATABASE_URL", "DEV_CONSOLE_KEY", "PAYPAL_WEBHOOK_ID"];
+  const names = ["PAYPAL_CLIENT_ID", "PAYPAL_CLIENT_SECRET", "GROQ_API_KEY", "GEMINI_API_KEY", "CHANNEL3_API_KEY", "JOBS_KEY", "DATABASE_URL", "DEV_CONSOLE_KEY", "PAYPAL_WEBHOOK_ID"];
   const settings = Object.fromEntries(names.map((n) => [n, Boolean(process.env[n])]));
   try {
     const d = await db();

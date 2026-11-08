@@ -4,6 +4,8 @@ import { diary, logEvent } from "../core/events";
 import { getKitten, getUser, listRules, mySquads, sharesASquad, addCustomRule } from "../core/users";
 import { calendar, committedCents, jarBalances, monthSpentCents } from "../core/month";
 import { createWhim } from "../core/whims";
+import { logIPaid, myYarn, runUntangle } from "../core/yarn";
+import { partyView } from "../core/party";
 import { chatIntent, classifyQuestion } from "./ai";
 import { funBudgetCents, shareable } from "../referee/rules";
 import { clash, localToday, validTz, zonedToUtc } from "../referee/time";
@@ -70,6 +72,53 @@ export async function kittenChat(userId: string, message: string): Promise<ChatR
     case "explain": {
       const [last] = (await diary(d, userId, 20)).filter((e) => e.actor === "kitten");
       return { text: last ? `Last thing I did: ${last.type.replace(".", " ")}. Why: ${last.reason ?? "you asked me to"}.` : "I haven't done anything on my own yet." };
+    }
+    case "log_i_paid": {
+      // Not money moving: it creates a card each friend confirms (FR-YARN-2).
+      const cents = Math.round(Number(String(args.dollars ?? "").replace(/[^0-9.]/g, "")) * 100);
+      const names = String(args.friends ?? "").split(/,|\band\b/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+      const people = friends.filter((f) => names.includes(f.name.toLowerCase()));
+      const squad = squads.find((s) => s.kind === "squad");
+      if (!cents || !people.length || !squad) return { text: "Tell me the amount and who it was for, like \"I paid $48 for dinner for Jordan and Tyler\"." };
+      // "for coffee for Ava and Tyler": if the model left the note out, take it from the words themselves.
+      const note = (args.note?.trim() || /\bfor\s+(.+?)\s+for\b/i.exec(message)?.[1] || "something").slice(0, 60);
+      const r = await logIPaid(userId, { squadId: squad.id, cents, note, forUserIds: people.map((p) => p.id) });
+      return { text: `Logged it: you paid ${fmt(cents)} for ${note}. ${people.map((p) => p.name).join(" and ")} will confirm with one tap.`, card: { type: "yarn_card", ...r } };
+    }
+    case "my_yarn": {
+      const y = await myYarn(userId);
+      const owe = y.reduce((a, s) => a + s.youOweCents, 0);
+      const owed = y.reduce((a, s) => a + s.owedToYouCents, 0);
+      const why = y.flatMap((s) => s.strands).slice(0, 3).map((s) => s.text).join(" ");
+      return { text: owe || owed ? `You owe ${fmt(owe)}, and friends owe you ${fmt(owed)}.${why ? ` ${why}` : ""}` : "All untangled. Nobody owes anybody.", card: { type: "yarn", squads: y } };
+    }
+    case "untangle": {
+      const squad = squads.find((s) => s.kind === "squad");
+      if (!squad) return { text: "Join a squad first." };
+      const r = await runUntangle(userId, squad.id);
+      const mine = r.transfers.filter((t) => t.from === userId);
+      return { text: r.transfers.length ? `Untangled ${squad.name} into ${r.transfers.length} payment${r.transfers.length > 1 ? "s" : ""}.${mine.length ? ` Yours: ${fmt(mine.reduce((a, t) => a + t.cents, 0))}. Tap to pay.` : " Nothing for you to pay."}` : `${squad.name} is all untangled.`, card: { type: "untangle", ...r } };
+    }
+    case "ask_for_help": {
+      // A draft only: the request goes out after the owner picks friends and taps send (FR-CHAT-2).
+      const cents = Math.round(Number(String(args.dollars ?? "").replace(/[^0-9.]/g, "")) * 100);
+      return { text: cents ? `I drafted a request for ${fmt(cents)}: "${args.note ?? ""}". Pick who to ask, then tap send. Only they will see it.` : "How much do you need, and what for?", card: { type: "help_draft", cents, note: args.note ?? "", action: { method: "POST", path: "help" } } };
+    }
+    case "my_party": {
+      const lines = [];
+      for (const s of squads.filter((x) => x.kind === "squad")) {
+        const v = await partyView(userId, s.id);
+        if (v.party) lines.push(`${v.party.name}: the jar has ${fmt(v.jarCents)}${v.party.goalCents ? ` of ${fmt(v.party.goalCents)}` : ""}${v.mine ? `, yours ${fmt(v.mine.balanceCents)}` : ""}`);
+      }
+      return { text: lines.length ? `${lines.join(". ")}.` : "No Kitty Party yet. Start one in a squad's Party tab." };
+    }
+    case "top_up_jar": {
+      // Money moving: a confirmation card, never done from chat directly (FR-CHAT-2).
+      const cents = Math.round(Number(String(args.dollars ?? "").replace(/[^0-9.]/g, "")) * 100);
+      if (!cents || cents < 0) return { text: "How much should I add to your Treat Jar?" };
+      // Same limit as the top-up itself, so the card never offers something that would fail.
+      if (cents > 50_000) return { text: "The most I can add at once is $500. Want me to add $500?", card: { type: "confirm", action: { method: "POST", path: "jar/topup", body: { cents: 50_000 } } } };
+      return { text: `Top up your Treat Jar with ${fmt(cents)}? Tap to confirm.`, card: { type: "confirm", action: { method: "POST", path: "jar/topup", body: { cents } } } };
     }
     default:
       return { text: (args.reply ?? "Purr. I can float a whim, check your month, or ask a friend's kitten.").slice(0, 300) };

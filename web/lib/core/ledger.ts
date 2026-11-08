@@ -10,6 +10,7 @@ import type { Queryable } from "../db";
  *   savings:{squad}:{user}     Kitty Party savings (one party per squad in v1)
  *   savings_held:{squad}:{user}
  *   plan:{plan}                a plan's pot
+ *   yarn:{squad} / help:{request} / bowl:{bowl}   pass-through pots for Phase 2 (always back to 0)
  */
 
 export type Entry = { account: string; cents: number };
@@ -21,6 +22,10 @@ export const acct = {
   savings: (s: string, u: string) => `savings:${s}:${u}`,
   savingsHeld: (s: string, u: string) => `savings_held:${s}:${u}`,
   plan: (p: string) => `plan:${p}`,
+  // Phase 2
+  yarn: (s: string) => `yarn:${s}`, //            settling Yarn: money passes through on its way to the person owed
+  help: (r: string) => `help:${r}`, //            a Nine Lives request's pot
+  bowl: (b: string) => `bowl:${b}`, //            a Bowl cycle's collected shares
 };
 
 export async function post(
@@ -42,9 +47,20 @@ export async function post(
   return txn;
 }
 
-/** Move cents from one account to another (one balanced pair). */
-export function move(q: Queryable, from: string, to: string, cents: number, meta: Parameters<typeof post>[2]) {
-  if (cents <= 0) return Promise.resolve("");
+/** A person's own money in Kitty: these balances may never go below $0 (FR-JAR-3, FR-PARTY-6). */
+const OWNED = ["jar:", "jar_held:", "savings:", "savings_held:"];
+export const isOwnedAccount = (account: string) => OWNED.some((p) => account.startsWith(p));
+
+/** Move cents from one account to another (one balanced pair). Refuses to overdraw someone's own money. */
+export async function move(q: Queryable, from: string, to: string, cents: number, meta: Parameters<typeof post>[2]) {
+  if (cents <= 0) return "";
+  if (isOwnedAccount(from)) {
+    const have = await balance(q, from);
+    if (have < cents) {
+      const what = from.startsWith("jar") ? "Treat Jar" : "savings";
+      throw new Error(`Not enough in your ${what}: $${(have / 100).toFixed(2)} available.`);
+    }
+  }
   return post(q, [{ account: from, cents: -cents }, { account: to, cents }], meta);
 }
 

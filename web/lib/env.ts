@@ -10,6 +10,8 @@ const schema = z.object({
   // AI keys are optional: the kitten uses whichever are set (Groq first, then Gemini), and code fallbacks when none answer.
   GROQ_API_KEY: z.string().min(10).optional(),
   GEMINI_API_KEY: z.string().min(10).optional(),
+  CHANNEL3_API_KEY: z.string().min(10).optional(), // Catnip gift search (sponsor); AI-written ideas without it
+  JOBS_KEY: z.string().min(16).optional(), //         the scheduler's key: it can only run /api/v1/jobs/run
   DATABASE_URL: z.string().optional(),
   DEV_CONSOLE_KEY: z.string().min(8).optional(),
   PAYPAL_WEBHOOK_ID: z.string().optional(),

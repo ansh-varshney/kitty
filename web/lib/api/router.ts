@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { loginUrl } from "../paypal/login";
 import { baseUrl } from "../env";
@@ -17,6 +17,20 @@ import { runTick } from "../core/tick";
 import { DEMO_FRIENDS, seedDemoWorld, seedSavings } from "../core/seed";
 import { kittenChat, askFriendKitten, answerOwnerAsk } from "../kitten/chat";
 import { funBudgetCents } from "../referee/rules";
+import { validTz } from "../referee/time";
+import * as yarn from "../core/yarn";
+import * as help from "../core/help";
+import * as party from "../core/party";
+import * as catnip from "../core/catnip";
+import * as bowl from "../core/bowl";
+import * as meows from "../core/meows";
+import * as purrs from "../core/purrs";
+import * as exportMod from "../core/export";
+import { myMonth } from "../core/mymonth";
+import { runJobs } from "../core/jobs";
+import { leaveSquad } from "../core/leave";
+import { move as moveLedger } from "../core/ledger";
+import { captureCheckout } from "../paypal/holds";
 
 /**
  * The Kitty API, /api/v1/... (PRD §D8 Phase 1). One table of routes; every handler gets the acting user.
@@ -34,7 +48,7 @@ export class HttpError extends Error {
 
 type Ctx = { req: Request; url: URL; params: string[]; userId: string | null; body: unknown };
 type Handler = (c: Ctx) => Promise<unknown>;
-type Route = { method: "GET" | "POST" | "DELETE"; path: string; auth: "user" | "dev" | "none"; handler: Handler };
+type Route = { method: "GET" | "POST" | "DELETE"; path: string; auth: "user" | "dev" | "jobs" | "none"; handler: Handler };
 
 const routes: Route[] = [];
 const on = (method: Route["method"], path: string, auth: Route["auth"], handler: Handler) => routes.push({ method, path, auth, handler });
@@ -136,6 +150,10 @@ on("GET", "squads/:id/feed", "user", async (c) => {
   await squadAccess(c.params[0], me(c));
   return squadFeed(await db(), c.params[0], Number(c.url.searchParams.get("after") ?? 0) || 0, 100);
 });
+on("POST", "squads/:id/leave", "user", async (c) => {
+  await squadAccess(c.params[0], me(c));
+  return leaveSquad(me(c), c.params[0]);
+});
 on("POST", "squads/:id/keep", "user", async (c) => {
   await users.keepAsSquad(await db(), me(c), c.params[0], parse(z.object({ name: z.string().min(1).max(40).optional() }), c.body).name);
   return { ok: true };
@@ -167,6 +185,7 @@ const WhimBody = z.object({
   needAtLeast: z.number().int().min(2).max(50).optional(),
 });
 on("POST", "whims", "user", async (c) => whims.createWhim(me(c), parse(WhimBody, c.body)));
+on("POST", "whims/:id/withdraw", "user", async (c) => whims.withdrawWhim(me(c), c.params[0]));
 on("GET", "answers", "user", async (c) => whims.pendingAnswers(me(c)));
 on("POST", "answers/confirm", "user", async (c) => {
   const b = parse(z.object({ items: z.array(z.object({ answerId: uuid, answer: z.enum(["yes", "maybe", "no"]).optional() })).min(1).max(50) }), c.body);
@@ -228,6 +247,8 @@ on("POST", "plans/:id/cover", "user", async (c) => {
 on("POST", "plans/:id/pounce", "user", async (c) => {
   const p = await planAccess(c.params[0], me(c));
   if (p.host_id !== me(c)) throw new HttpError(403, "Only the host taps Pounce.");
+  const [now] = await (await db()).query<{ status: string }>(`select status from plans where id=$1`, [c.params[0]]);
+  if (now.status === "cancelled" || now.status === "on_ice") throw new HttpError(400, now.status === "cancelled" ? "This plan was cancelled." : "This plan is on ice. Set a new deadline to reopen it.");
   const r = (await pounce.tryPounce(c.params[0], { hostTapped: true })) as { status: string; inCount?: number; invited?: number };
   if (r.status !== "waiting") return r;
   // Say WHY it didn't Pounce (owner test, 7 Nov: a quiet "waiting" looked like it had worked).
@@ -240,6 +261,11 @@ on("POST", "plans/:id/pounce", "user", async (c) => {
         ? `Not yet: this plan's rule is "Pounce when everyone is in", and ${inNow} of ${r.invited} invited are in. To go now, change the rule to "Pounce when I tap", Save, then tap Pounce again.`
         : "Not yet.";
   return { ...r, pounced: false, why };
+});
+on("POST", "plans/:id/cancel", "user", async (c) => {
+  const p = await planAccess(c.params[0], me(c));
+  if (p.host_id !== me(c)) throw new HttpError(403, "Only the host can cancel this plan.");
+  return pounce.cancelPlan(me(c), c.params[0]);
 });
 on("POST", "plans/:id/tag-along", "user", async (c) => {
   await planAccess(c.params[0], me(c));
@@ -293,7 +319,138 @@ on("POST", "kitten/answer", "user", async (c) => {
   return answerOwnerAsk(me(c), b.eventId, b.answer);
 });
 
+// ================================================================ Phase 2 (PRD §B11–B21)
+
+const people = z.array(uuid).min(1).max(20);
+
+// ---- Yarn and Untangle (§B11)
+on("POST", "yarn/cards", "user", async (c) => {
+  const b = parse(z.object({ squadId: uuid, payerId: uuid.optional(), cents, note: z.string().min(1).max(80), forUserIds: people, includePayer: z.boolean().optional(), kind: z.enum(["split", "treat"]).optional() }), c.body);
+  return yarn.logIPaid(me(c), b);
+});
+on("POST", "yarn/cards/:id/confirm", "user", async (c) => yarn.respondCard(me(c), c.params[0], true));
+on("POST", "yarn/cards/:id/dispute", "user", async (c) => yarn.respondCard(me(c), c.params[0], false));
+on("POST", "yarn/cards/:id/gift", "user", async (c) => help.loanToGift(me(c), c.params[0]));
+on("POST", "yarn/cards/:id/remove", "user", async (c) => yarn.removeCard(me(c), c.params[0]));
+on("POST", "yarn/cards/:id/edit", "user", async (c) => {
+  const b = parse(z.object({ cents: cents.optional(), note: z.string().min(1).max(80).optional(), forUserIds: people.optional(), includePayer: z.boolean().optional() }), c.body);
+  return yarn.editCard(me(c), c.params[0], b);
+});
+on("GET", "yarn", "user", async (c) => yarn.myYarn(me(c)));
+on("GET", "squads/:id/yarn", "user", async (c) => {
+  await squadAccess(c.params[0], me(c));
+  return yarn.squadYarnSummary(c.params[0]);
+});
+on("POST", "squads/:id/untangle", "user", async (c) => yarn.runUntangle(me(c), c.params[0]));
+on("POST", "yarn/settlements/:id/pay", "user", async (c) => yarn.paySettlement(me(c), c.params[0]));
+
+// ---- Nine Lives (§B12)
+on("POST", "help", "user", async (c) => {
+  const b = parse(z.object({ cents, note: z.string().min(2).max(140), kind: z.enum(["gift", "loan", "either"]).optional(), neededBy: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(), friendIds: people }), c.body);
+  return help.askForHelp(me(c), b);
+});
+on("GET", "help", "user", async (c) => help.myHelpAsks(me(c)));
+on("GET", "help/:id", "user", async (c) => help.helpView(me(c), c.params[0]));
+on("POST", "help/:id/pledge", "user", async (c) => help.pledgeHelp(me(c), c.params[0], parse(z.object({ cents, asLoan: z.boolean().optional() }), c.body)));
+on("POST", "help/:id/decline", "user", async (c) => help.declineHelp(me(c), c.params[0]));
+on("POST", "help/:id/unpledge", "user", async (c) => help.unpledgeHelp(me(c), c.params[0]));
+on("POST", "help/:id/accept", "user", async (c) => help.acceptHelp(me(c), c.params[0]));
+on("POST", "help/:id/close", "user", async (c) => help.closeHelp(me(c), c.params[0]));
+
+// ---- Kitty Party (§B13)
+on("GET", "squads/:id/party", "user", async (c) => party.partyView(me(c), c.params[0]));
+on("POST", "squads/:id/party", "user", async (c) => {
+  const b = parse(z.object({ name: z.string().min(1).max(40), goalCents: cents.nullish(), goalNote: z.string().max(80).nullish(), intervalUnit: z.enum(["DAY", "WEEK", "MONTH"]).optional() }), c.body);
+  return party.createParty(me(c), c.params[0], b);
+});
+on("POST", "squads/:id/party/join", "user", async (c) => party.joinParty(me(c), c.params[0], parse(z.object({ monthlyCents: cents }), c.body).monthlyCents));
+on("POST", "squads/:id/party/stop", "user", async (c) => party.stopSaving(me(c), c.params[0]));
+on("POST", "squads/:id/party/withdraw", "user", async (c) => party.withdrawSavings(me(c), c.params[0], parse(z.object({ cents: cents.optional() }), c.body).cents));
+
+// ---- Catnip (§B14)
+on("GET", "gifts", "user", async (c) => catnip.myGiftInvites(me(c)));
+on("GET", "gifts/:id", "user", async (c) => catnip.giftView(me(c), c.params[0]));
+on("POST", "gifts/:id/join", "user", async (c) => catnip.joinGift(me(c), c.params[0], parse(z.object({ limitCents: z.number().int().min(0).max(1_000_000).optional() }), c.body).limitCents));
+on("POST", "gifts/:id/skip", "user", async (c) => catnip.skipGift(me(c), c.params[0]));
+on("POST", "gifts/:id/limit", "user", async (c) => catnip.setGiftLimit(me(c), c.params[0], parse(z.object({ limitCents: z.number().int().min(0).max(1_000_000) }), c.body).limitCents));
+on("POST", "gifts/:id/ideas", "user", async (c) => catnip.findGiftIdeas(me(c), c.params[0]));
+on("POST", "gifts/:id/links", "user", async (c) => catnip.addGiftLink(me(c), c.params[0], parse(z.object({ title: z.string().min(1).max(120), url: z.string().url().max(500).optional(), priceCents: cents.optional() }), c.body)));
+on("POST", "gifts/ideas/:id/vote", "user", async (c) => catnip.voteGiftIdea(me(c), c.params[0]));
+on("POST", "gifts/:id/plan", "user", async (c) => catnip.startGiftPlan(me(c), c.params[0], parse(z.object({ ideaId: uuid }), c.body).ideaId));
+
+// ---- The Bowl (§B15)
+on("POST", "squads/:id/bowls", "user", async (c) => {
+  const b = parse(z.object({ service: z.string().min(1).max(40), totalCents: cents, seats: z.number().int().min(2).max(12), memberIds: people }), c.body);
+  return bowl.createBowl(me(c), { squadId: c.params[0], ...b });
+});
+on("GET", "squads/:id/bowls", "user", async (c) => {
+  await squadAccess(c.params[0], me(c));
+  return (await db()).query(`select id, service, total_cents, seats, status from bowls where squad_id=$1 order by created_at`, [c.params[0]]);
+});
+on("GET", "bowls/:id", "user", async (c) => bowl.bowlView(me(c), c.params[0]));
+on("POST", "bowls/:id/join", "user", async (c) => bowl.joinBowl(me(c), c.params[0]));
+on("POST", "bowls/:id/leave", "user", async (c) => bowl.leaveBowl(me(c), c.params[0]));
+on("POST", "bowls/:id/close", "user", async (c) => bowl.closeBowl(me(c), c.params[0]));
+
+// ---- Meows, alerts, purrs, My Month (§B16, §B17, §B20)
+on("GET", "meows", "user", async (c) => meows.buildMeows(me(c)));
+on("GET", "alerts", "user", async (c) => meows.alerts(me(c)));
+on("GET", "purrs", "user", async (c) => purrs.myPurrs(me(c)));
+on("GET", "squads/:id/purrs", "user", async (c) => {
+  await squadAccess(c.params[0], me(c));
+  return purrs.squadPurrs(c.params[0]);
+});
+on("GET", "month", "user", async (c) => myMonth(me(c)));
+on("POST", "me/settings", "user", async (c) => {
+  const hm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+  const b = parse(z.object({ meowTime: hm.optional(), quietStart: hm.optional(), quietEnd: hm.optional(), tz: z.string().max(60).optional() }), c.body);
+  const d = await db();
+  await d.query(
+    `update users set meow_time=coalesce($2,meow_time), quiet_start=coalesce($3,quiet_start), quiet_end=coalesce($4,quiet_end), tz=coalesce($5,tz) where id=$1`,
+    [me(c), b.meowTime ?? null, b.quietStart ?? null, b.quietEnd ?? null, b.tz ? validTz(b.tz) : null],
+  );
+  return { ok: true };
+});
+
+// ---- Export (§B21)
+const csv = (body: string, file: string) => new Response(body, { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${file}"` } });
+on("GET", "export/diary.csv", "user", async (c) => csv(await exportMod.diaryCsv(me(c)), "kitten-diary.csv"));
+on("GET", "export/month.csv", "user", async (c) => csv(await exportMod.monthCsv(me(c)), "my-month.csv"));
+on("POST", "calendar/token", "user", async (c) => {
+  const token = await exportMod.calendarToken(me(c), parse(z.object({ rotate: z.boolean().optional() }), c.body).rotate);
+  return { token, url: `${baseUrl()}/api/v1/cal/${token}` };
+});
+
+// ---- Scheduled jobs (§D1 Phase 2): the scheduler calls this with the jobs key
+on("POST", "jobs/run", "jobs", async () => runJobs());
+
 // ---------------------------------------------------------------- PayPal returns (the browser lands here after approving)
+on("GET", "return/pay", "none", async (c) => {
+  const token = c.url.searchParams.get("token");
+  if (!token) return redirect(c, "/?pay=cancelled");
+  const cap = await captureCheckout(token);
+  const [kind, id] = (cap.customId ?? "").split(":");
+  if (kind === "yarn" && id && cap.status === "COMPLETED") {
+    const [s] = await (await db()).query<{ squad_id: string; cents: number }>(`select squad_id, cents from yarn_settlements where id=$1`, [id]);
+    await (await db()).tx((q) => moveLedger(q, "world", `yarn:${s.squad_id}`, s.cents, { kind: "yarn_pay", reason: "settling Yarn", paypalId: cap.captureId ?? null }));
+    await yarn.finishSettlement(id, "paypal", cap.captureId ?? null);
+  }
+  return redirect(c, "/?pay=done");
+});
+on("GET", "return/help", "none", async (c) => {
+  const token = c.url.searchParams.get("token");
+  if (!token) return redirect(c, "/?help=cancelled");
+  await help.finishHelpHold(token);
+  return redirect(c, "/?help=done");
+});
+on("GET", "return/party", "none", async (c) => {
+  const sub = c.url.searchParams.get("subscription_id");
+  if (sub) {
+    await party.finishPartySubscription(sub);
+    await (await db()).query(`update bowl_members set status='active' where subscription_id=$1`, [sub]);
+  }
+  return redirect(c, sub ? "/?subscription=done" : "/?subscription=cancelled");
+});
 
 on("GET", "return/jar", "none", async (c) => {
   const token = c.url.searchParams.get("token");
@@ -341,8 +498,38 @@ on("POST", "tick", "dev", async (c) => {
 });
 on("GET", "dev/routes", "dev", async () => routeList());
 on("GET", "dev/demo-friends", "dev", async () => DEMO_FRIENDS.map((f) => ({ key: f.key, name: f.name, kitten: f.kitten })));
+// Phase 2 test helpers: run every job as if N hours later; collect party savings now; run a Bowl cycle now;
+// move a demo friend's birthday close so the Catnip radar fires.
+on("POST", "dev/jobs", "dev", async (c) => runJobs(new Date(Date.now() + (parse(z.object({ hoursAhead: z.number().min(0).max(24 * 60).optional() }), c.body).hoursAhead ?? 0) * 3600_000)));
+on("POST", "dev/party/collect", "dev", async (c) => {
+  const b = parse(z.object({ squadId: uuid }), c.body);
+  const d = await db();
+  const ms = await d.query<{ party_id: string; user_id: string }>(`select m.party_id, m.user_id from party_members m join parties p on p.id=m.party_id where p.squad_id=$1 and m.status='active'`, [b.squadId]);
+  const out = [];
+  for (const m of ms) out.push(await party.collectContribution(m.party_id, m.user_id));
+  return { collected: out.length, payments: out };
+});
+on("POST", "dev/bowls/:id/cycle", "dev", async (c) => bowl.bowlCycle(c.params[0]));
+on("POST", "dev/birthday", "dev", async (c) => {
+  const b = parse(z.object({ userId: uuid, inDays: z.number().int().min(0).max(30) }), c.body);
+  const d = await db();
+  const target = new Date(Date.now() + b.inDays * 86400_000).toISOString().slice(5, 10);
+  const r = await d.query<{ birth_date: string }>(`update users set birth_date = make_date(extract(year from birth_date)::int, $2, $3), share_birthday=true where id=$1 and is_demo returning birth_date::text`, [b.userId, Number(target.slice(0, 2)), Number(target.slice(3, 5))]);
+  if (!r.length) throw new HttpError(403, "Only demo friends.");
+  return { ok: true, birthDate: r[0].birth_date };
+});
 
 // ---------------------------------------------------------------- dispatch
+
+/** The scheduler's key (JOBS_KEY): it can only run jobs, nothing else. */
+function jobsKeyOk(req: Request) {
+  const key = process.env.JOBS_KEY;
+  const given = req.headers.get("x-jobs-key") ?? "";
+  if (!key || key.length < 16) return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(key);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 function redirect(c: Ctx, to: string) {
   return Response.redirect(new URL(to, c.url.origin), 303);
@@ -375,6 +562,7 @@ export async function dispatch(req: Request, segs: string[]): Promise<Response> 
   if (!m) return Response.json({ error: "Not found" }, { status: 404 });
   try {
     if (m.route.auth === "dev" && !devAllowed(req)) throw new HttpError(403, "Dev key needed.");
+    if (m.route.auth === "jobs" && !devAllowed(req) && !jobsKeyOk(req)) throw new HttpError(403, "Jobs key needed.");
     if (m.params.some((p) => !UUID_RE.test(p))) throw new HttpError(404, "Not found.");
     const userId = requestUserId(req);
     if (m.route.auth === "user" && !userId) throw new HttpError(401, "Log in first.");

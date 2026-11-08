@@ -36,6 +36,10 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      - key: CHANNEL3_API_KEY
+        sync: false
+      - key: JOBS_KEY
+        sync: false
       - key: DEV_CONSOLE_KEY
         sync: false
       - key: PAYPAL_WEBHOOK_ID

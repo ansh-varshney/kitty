@@ -4,7 +4,7 @@
 
 Kitty helps friends plan, pay and save together without anyone fronting money, chasing debts or overspending. Every user adopts a kitten: a personal AI agent that speaks for them in their friend groups, keeps their budget private, and moves money on PayPal only within the rules they set.
 
-Built for the *Build What's Next with PayPal and AI* hackathon (Devpost). Status: **Phase 1 (backend core) built and tested**; the app screens come in Phase 3. Live at https://kitty-web.onrender.com. The full spec is the PRD: [`Kitty-PRD-v1.12.pdf`](Kitty-PRD-v1.12.pdf) (source in `prd-source/`).
+Built for the *Build What's Next with PayPal and AI* hackathon (Devpost). Status: **Phases 1 and 2 (the whole backend) built and tested**; the app screens come in Phase 3. Live at https://kitty-web.onrender.com. The full spec is the PRD: [`Kitty-PRD-v1.15.pdf`](Kitty-PRD-v1.15.pdf) (source in `prd-source/`).
 
 ## Repository layout
 
@@ -19,7 +19,8 @@ Built for the *Build What's Next with PayPal and AI* hackathon (Devpost). Status
 | `web/lib/api/` + `web/app/api/v1/` | The API: one route table with access checks, plus a live event stream (SSE) |
 | `web/lib/db/` | Postgres (Render) or PGlite (local, zero setup), plus SQL migrations in `web/db/migrations/` |
 | `web/scripts/spike.ts` | Phase 0 spike: runs every integration against the sandbox |
-| `web/scripts/phase1-acceptance.ts` | Phase 1 acceptance: end-to-end checks against the real sandbox and Gemini |
+| `web/scripts/phase1-acceptance.ts`, `phase2-acceptance.ts` | Acceptance: end-to-end checks against the real sandbox and the AI |
+| `.github/workflows/kitty-jobs.yml` | Runs Kitty's scheduled jobs every 15 minutes (free) |
 | `prd-source/` | PRD source (Markdown) and PDF build script |
 | `render.yaml` | Render Blueprint: web service + Postgres |
 
@@ -42,7 +43,7 @@ Built for the *Build What's Next with PayPal and AI* hackathon (Devpost). Status
    ```
 3. Open http://localhost:3000/dev/play (the backend playground). Enter your `DEV_CONSOLE_KEY`, press **Seed demo world**, then act as any demo friend. The Phase 0 integration checks are at http://localhost:3000/dev.
 
-Other commands (from `web/`): `npm test` (unit tests), `npm run accept:phase1` (end-to-end acceptance against the sandbox), `npm run timing:nfr1` (whim speed), `npm run spike` (Phase 0 sandbox checks), `npm run build`.
+Other commands (from `web/`): `npm test` (unit tests), `npm run accept:phase1` and `npm run accept:phase2` (end-to-end acceptance against the sandbox), `npm run test:edges` (about 80 edge cases: undo after others acted, double taps, leaving a squad, timers running twice), `npm run timing:nfr1` (whim speed), `npm run spike` (Phase 0 sandbox checks), `npm run build`.
 
 ## AI tools used
 - **Groq** (`gpt-oss-20b` for text, Qwen 3.8 for screenshots and receipts, `gpt-oss-120b` as a backup) first, then **Gemini** as a fallback, then code (templates and a code whim reader), so the app never breaks.

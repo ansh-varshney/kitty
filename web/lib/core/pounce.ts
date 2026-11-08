@@ -11,6 +11,7 @@ import { clash } from "../referee/time";
 import { authorizeHold, captureHold, createTestCardHold, createWalletHold, refundCapture, testCardPayment, voidHold } from "../paypal/holds";
 import { sendPayout } from "../paypal/payouts";
 import { baseUrl } from "../env";
+import { withLock } from "./locks";
 
 /** Paw in, paw-up, cover, Pounce, release, tag along (PRD §B9, FR-POUNCE-1..10, FR-CAL-2, FR-MONTH-2). */
 
@@ -101,9 +102,15 @@ export async function pawIn(
   planId: string,
   opts: { limitCents: number; useSavings?: boolean; confirmOverBudget?: boolean; confirmBusy?: boolean },
 ): Promise<PawInResult> {
+  // One at a time per person per plan: a double tap must not place two holds (edge case B9).
+  return withLock(`paw:${planId}:${userId}`, () => pawInNow(userId, planId, opts));
+}
+
+async function pawInNow(userId: string, planId: string, opts: { limitCents: number; useSavings?: boolean; confirmOverBudget?: boolean; confirmBusy?: boolean }): Promise<PawInResult> {
   const d = await db();
   const plan = await getPlan(d, planId);
   if (plan.status !== "open") throw new Error("This plan isn't open.");
+  if (new Date(plan.decide_by).getTime() <= Date.now()) throw new Error("The deadline for this plan has passed.");
   if (plan.price_cents <= 0) throw new Error("The host hasn't set a price yet.");
   const limit = opts.limitCents;
   if (!Number.isInteger(limit) || limit <= 0) throw new Error("Pick an amount.");
@@ -209,7 +216,13 @@ export async function finishWalletHold(orderId: string) {
   const d = await db();
   const [paw] = await d.query<Paw>(`select * from paws where order_id=$1`, [orderId]);
   if (!paw) throw new Error("Unknown hold");
-  if (paw.status === "held") return { planId: paw.plan_id, already: true };
+  if (paw.status !== "pending") return { planId: paw.plan_id, already: true };
+  const [pl] = await d.query<{ status: string }>(`select status from plans where id=$1`, [paw.plan_id]);
+  if (pl?.status !== "open") {
+    // The plan closed while they were on PayPal: don't place the hold at all (nothing to release later).
+    await d.query(`update paws set status='voided' where id=$1`, [paw.id]);
+    return { planId: paw.plan_id, closed: true };
+  }
   const hold = await authorizeHold(orderId);
   await d.query(`update paws set status='held', authorization_id=$2, expires_at=$3 where id=$1`, [paw.id, hold.authorizationId, hold.expiresAt ?? null]);
   const plan = await getPlan(d, paw.plan_id);
@@ -227,6 +240,7 @@ export async function finishWalletHold(orderId: string) {
 export async function answerPawUp(userId: string, planId: string, accept: boolean) {
   const d = await db();
   const plan = await getPlan(d, planId);
+  if (plan.status !== "open") throw new Error("This plan isn't open.");
   const [m] = await d.query<{ pawup_need_cents: number | null; limit_cents: number | null }>(
     `select pawup_need_cents, limit_cents from plan_members where plan_id=$1 and user_id=$2`,
     [planId, userId],
@@ -248,6 +262,11 @@ export async function coverFriend(fromId: string, planId: string, toId: string, 
   const d = await db();
   const plan = await getPlan(d, planId);
   if (fromId === toId) throw new Error("You can't cover yourself.");
+  // A cover on a plan that can't Pounce any more would sit on hold forever (edge cases B7, B8).
+  if (plan.status !== "open") throw new Error("This plan isn't open, so there's nothing to cover.");
+  if (new Date(plan.decide_by).getTime() <= Date.now()) throw new Error("The deadline for this plan has passed.");
+  const [them] = await d.query<{ status: string }>(`select status from plan_members where plan_id=$1 and user_id=$2`, [planId, toId]);
+  if (!them || !["in", "thinking"].includes(them.status)) throw new Error("You can only cover someone who's taking part.");
   const h = await placeHold(plan, fromId, cents, "cover", toId);
   await d.query(`update plan_members set pawup_need_cents = greatest(coalesce(pawup_need_cents,0) - $3, 0) where plan_id=$1 and user_id=$2`, [planId, toId, cents]);
   await d.query(`update plan_members set pawup_need_cents = null where plan_id=$1 and user_id=$2 and pawup_need_cents = 0`, [planId, toId]);
@@ -278,6 +297,11 @@ async function candidatesFor(q: Queryable, plan: PlanRow): Promise<Candidate[]> 
  * if nobody fits enough, everything is released and the plan goes on ice.
  */
 export async function tryPounce(planId: string, opts: { hostTapped?: boolean; atDeadline?: boolean; finalize?: boolean }) {
+  // One Pounce at a time per plan: a double tap, a paw-in and the timer can all arrive together (edge case B14).
+  return withLock(`pounce:${planId}`, () => tryPounceNow(planId, opts));
+}
+
+async function tryPounceNow(planId: string, opts: { hostTapped?: boolean; atDeadline?: boolean; finalize?: boolean }) {
   const d = await db();
   const plan = await getPlan(d, planId);
   if (plan.status !== "open") return { status: plan.status };
@@ -402,11 +426,12 @@ async function executePounce(plan: PlanRow, groupIds: string[], shares: Record<s
   // 3) Pay the booker before they book.
   const total = groupIds.reduce((a, id) => a + shares[id], 0);
   const booker = await getUser(d, plan.booker_id);
-  if (!booker?.paypal_email) throw new Error("The booker has no PayPal email");
   // A failed payout must never strand captured money: record the Pounce, keep the money in the plan's pot,
   // and the timer retries the payout (retryPendingPayouts). Phase 1 finding: the sandbox platform balance drains by fees.
   let payout: { batchId: string } | null = null;
   try {
+    // No PayPal email yet (edge case B15): same as a failed payout. The money waits in the pot; the timer pays it.
+    if (!booker?.paypal_email) throw new Error("the booker has no PayPal email yet");
     payout = await sendPayout([{ email: booker.paypal_email, cents: total, note: `Kitty: ${plan.title}`, itemId: `pounce-${plan.id.slice(0, 8)}` }], `Kitty: money for ${plan.title}`);
   } catch (e) {
     console.error(`[pounce] payout failed for ${plan.id}, will retry: ${(e as Error).message}`);
@@ -479,6 +504,14 @@ export async function releaseMember(planId: string, userId: string, reason: stri
   });
 }
 
+/** Release every hold on a plan (Treat Jar and savings back, pending approvals voided); the caller sets the status. */
+async function releaseAll(q: Queryable, plan: PlanRow, paws: Paw[]) {
+  for (const p of paws) {
+    if (p.status === "pending") await q.query(`update paws set status='voided' where id=$1`, [p.id]);
+    else await releasePawLedger(q, plan, p);
+  }
+}
+
 /** Deadline missed (or nobody fits): release everything, plan on ice (FR-POUNCE-7, AT-11). */
 export async function putOnIce(planId: string, why: string) {
   const d = await db();
@@ -486,25 +519,58 @@ export async function putOnIce(planId: string, why: string) {
   const paws = await d.query<Paw>(`select * from paws where plan_id=$1 and status in ('held','pending')`, [planId]);
   for (const p of paws) if (p.source === "paypal" && p.authorization_id && p.status === "held") await voidHold(p.authorization_id).catch(() => undefined);
   await d.tx(async (q) => {
-    for (const p of paws) {
-      if (p.status === "pending") await q.query(`update paws set status='voided' where id=$1`, [p.id]);
-      else await releasePawLedger(q, plan, p);
-    }
+    await releaseAll(q, plan, paws);
     await q.query(`update plans set status='on_ice', paw_up_round=0, pawup_until=null where id=$1`, [planId]);
     await q.query(`update plan_members set status='thinking', pawup_need_cents=null where plan_id=$1 and status='in'`, [planId]);
     await logEvent(q, { squadId: plan.squad_id, actor: "system", type: "plan.on_ice", objectType: "plan", objectId: planId, public: { text: `${plan.title} is on ice. Everything held has been released.` } });
-    await logEvent(q, { userId: plan.host_id, squadId: plan.squad_id, actor: "kitten", type: "plan.on_ice", objectType: "plan", objectId: planId, payload: { text: "Options: extend the deadline, lower the price, ask for cover, or cancel." }, reason: why });
+    await logEvent(q, { userId: plan.host_id, squadId: plan.squad_id, actor: "kitten", type: "plan.on_ice", objectType: "plan", objectId: planId, payload: { text: `"${plan.title}" is on ice. Options: extend the deadline, lower the price, ask for cover, or cancel.` }, reason: why });
   });
   return { status: "on_ice", released: paws.length };
 }
 
+/**
+ * The host cancels (PRD §B8: "the host can extend, change the price, or cancel"). Only before the Pounce: every hold
+ * is released, paw-up asks and suggestions close, and each member's kitten tells them privately. After the Pounce
+ * the booker has the money, so the receipt (and its refunds) settles it instead.
+ */
+export async function cancelPlan(hostId: string, planId: string) {
+  return withLock(`pounce:${planId}`, async () => {
+    const d = await db();
+    const plan = await getPlan(d, planId);
+    if (plan.host_id !== hostId) throw new Error("Only the host can cancel this plan.");
+    if (plan.status === "cancelled") throw new Error("This plan is already cancelled.");
+    if (!["open", "on_ice"].includes(plan.status)) throw new Error("This plan has already Pounced, so it can't be cancelled. Add the receipt and any leftover goes back.");
+    const paws = await d.query<Paw>(`select * from paws where plan_id=$1 and status in ('held','pending')`, [planId]);
+    for (const p of paws) if (p.source === "paypal" && p.authorization_id && p.status === "held") await voidHold(p.authorization_id).catch(() => undefined);
+    const members = await d.query<{ user_id: string }>(`select user_id from plan_members where plan_id=$1 and user_id<>$2 and status<>'out'`, [planId, hostId]);
+    await d.tx(async (q) => {
+      await releaseAll(q, plan, paws);
+      await q.query(`update plans set status='cancelled', paw_up_round=0, pawup_until=null where id=$1`, [planId]);
+      await q.query(`update plan_members set pawup_need_cents=null where plan_id=$1`, [planId]);
+      await q.query(`update suggestions set status='rejected' where plan_id=$1 and status='open'`, [planId]);
+      for (const m of members) {
+        await logEvent(q, { userId: m.user_id, squadId: plan.squad_id, actor: "kitten", type: "plan.cancelled", objectType: "plan", objectId: planId, payload: { text: `"${plan.title}" was cancelled. Anything I held for you is released.` }, reason: "the host cancelled the plan" });
+      }
+      await logEvent(q, { squadId: plan.squad_id, actor: "system", type: "plan.cancelled", objectType: "plan", objectId: planId, public: { text: `${plan.title} was cancelled. Everything held has been released.` } });
+    });
+    return { ok: true, released: paws.length };
+  });
+}
+
 /** Join after the Pounce (FR-POUNCE-8/9, AT-9): newcomer pays the new share; others get the exact difference back. */
 export async function tagAlong(userId: string, planId: string, opts: { limitCents: number }) {
+  // Two newcomers at once would both refund the same people: one at a time per plan.
+  return withLock(`pounce:${planId}`, () => tagAlongNow(userId, planId, opts));
+}
+
+async function tagAlongNow(userId: string, planId: string, opts: { limitCents: number }) {
   const d = await db();
   const plan = await getPlan(d, planId);
   if (!["pounced", "settled"].includes(plan.status) || plan.locked_at) throw new Error("This plan can't take tag-alongs now.");
   const [pounce] = await d.query<{ id: string; group_ids: string[]; shares: Record<string, number> }>(`select id, group_ids, shares from pounces where plan_id=$1 order by created_at desc limit 1`, [planId]);
   if (pounce.group_ids.includes(userId)) throw new Error("You're already in.");
+  const inSquad = await d.query(`select 1 from memberships where squad_id=$1 and user_id=$2 and left_at is null`, [plan.squad_id, userId]);
+  if (!inSquad.length) throw new Error("You're not in this plan's group.");
   const user = await getUser(d, userId);
   // Cost basis: the confirmed receipt total if there is one; what each person has actually paid, net of refunds.
   const [rcpt] = await d.query<{ confirmed_cents: number }>(`select confirmed_cents from receipts where plan_id=$1 and status='confirmed' order by created_at desc limit 1`, [planId]);

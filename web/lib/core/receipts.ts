@@ -7,7 +7,7 @@ import { paidParts } from "./pounce";
 import { leftovers, overrun } from "../referee/settle";
 import { readReceipt } from "../kitten/ai";
 import { refundCapture, testCardPayment } from "../paypal/holds";
-import { sendPayout } from "../paypal/payouts";
+import { withLock } from "./locks";
 
 /** Receipts and leftovers (PRD §B10, FR-SETTLE-1..4, AT-12). */
 
@@ -21,6 +21,8 @@ export async function submitReceipt(bookerId: string, planId: string, input: { i
   if (plan.status !== "pounced") throw new Error("Receipts come after the Pounce.");
   const [pc] = await d.query<{ status: string }>(`select status from pounces where plan_id=$1 order by created_at desc limit 1`, [planId]);
   if (pc?.status === "payout_pending") throw new Error("Your payout hasn't arrived yet. Book and add the receipt after it does.");
+  const done = await d.query(`select 1 from receipts where plan_id=$1 and status='confirmed' limit 1`, [planId]);
+  if (done.length) throw new Error("This plan's receipt is already confirmed.");
   const read = input.imageBase64 ? await readReceipt(input.imageBase64, input.mimeType) : { totalCents: input.cents ?? null, merchant: null };
   const [r] = await d.query<{ id: string }>(`insert into receipts (plan_id, booker_id, extracted_cents) values ($1,$2,$3) returning id`, [planId, bookerId, read.totalCents]);
   await logEvent(d, { userId: bookerId, squadId: plan.squad_id, actor: "kitten", type: "receipt.read", objectType: "plan", objectId: planId, payload: { receiptId: r.id, extractedCents: read.totalCents, merchant: read.merchant, text: read.totalCents != null ? `I read ${fmt(read.totalCents)}. Is that right?` : "I couldn't read the total. Type it in?" }, reason: "you added a receipt" });
@@ -33,10 +35,21 @@ export async function submitReceipt(bookerId: string, planId: string, input: { i
  */
 export async function confirmReceipt(bookerId: string, receiptId: string, cents: number) {
   const d = await db();
+  const [r0] = await d.query<{ plan_id: string }>(`select plan_id from receipts where id=$1`, [receiptId]);
+  if (!r0) throw new Error("Not your receipt.");
+  // One settle at a time per plan: a double tap must not refund twice.
+  return withLock(`pounce:${r0.plan_id}`, () => confirmReceiptNow(bookerId, receiptId, cents));
+}
+
+async function confirmReceiptNow(bookerId: string, receiptId: string, cents: number) {
+  const d = await db();
   const [r] = await d.query<{ plan_id: string; booker_id: string; status: string }>(`select plan_id, booker_id, status from receipts where id=$1`, [receiptId]);
   if (!r || r.booker_id !== bookerId) throw new Error("Not your receipt.");
   if (r.status === "confirmed") throw new Error("Already confirmed.");
   const plan = await getPlan(d, r.plan_id);
+  if (plan.status !== "pounced") throw new Error("This plan is already settled.");
+  const other = await d.query(`select 1 from receipts where plan_id=$1 and status='confirmed' and id<>$2 limit 1`, [plan.id, receiptId]);
+  if (other.length) throw new Error("This plan's receipt is already confirmed.");
   const [pounce] = await d.query<{ group_ids: string[]; total_cents: number }>(`select group_ids, total_cents from pounces where plan_id=$1 order by created_at desc limit 1`, [plan.id]);
   const collected = pounce.total_cents; // what the booker received (tag-alongs refund others, not the booker)
   const [squad] = await d.query<{ leftovers_to_savings: boolean }>(`select leftovers_to_savings from squads where id=$1`, [plan.squad_id]);
@@ -107,8 +120,13 @@ export async function confirmReceipt(bookerId: string, receiptId: string, cents:
 
 /** A member pays their part of an overrun; when everyone has, the booker is paid the extra (FR-SETTLE-3). */
 export async function payOverrun(userId: string, planId: string) {
+  return withLock(`overrun:${planId}:${userId}`, () => payOverrunNow(userId, planId));
+}
+
+async function payOverrunNow(userId: string, planId: string) {
   const d = await db();
   const plan = await getPlan(d, planId);
+  if (plan.status !== "pounced") throw new Error("Nothing to pay: this plan is settled.");
   const [m] = await d.query<{ overrun_due_cents: number; overrun_paid: boolean }>(`select overrun_due_cents, overrun_paid from plan_members where plan_id=$1 and user_id=$2`, [planId, userId]);
   if (!m || m.overrun_paid || m.overrun_due_cents <= 0) throw new Error("Nothing to pay.");
   const user = await getUser(d, userId);
@@ -118,16 +136,26 @@ export async function payOverrun(userId: string, planId: string) {
     await move(q, acct.world, acct.plan(planId), m.overrun_due_cents, { kind: "overrun", userId, planId, paypalId: pay.captureId, reason: "your part of the extra cost" });
     await q.query(`update plan_members set overrun_paid=true where plan_id=$1 and user_id=$2`, [planId, userId]);
   });
+  const bookerPaid = await payOverrunToBooker(planId);
+  return { paid: true, bookerPaid };
+}
+
+/**
+ * When every share of an overrun is in, pay the booker the extra. A failed payout (or no PayPal email yet) leaves the
+ * money in the plan's pot and the timer tries again (retryPendingPayouts), instead of failing after members paid.
+ */
+export async function payOverrunToBooker(planId: string) {
+  const d = await db();
+  const plan = await getPlan(d, planId);
+  if (plan.status !== "pounced") return false;
   const [left] = await d.query<{ n: number }>(`select count(*)::int as n from plan_members where plan_id=$1 and overrun_due_cents>0 and not overrun_paid`, [planId]);
-  if (left.n === 0) {
-    const [{ c }] = await d.query<{ c: string }>(`select coalesce(sum(overrun_due_cents),0) as c from plan_members where plan_id=$1`, [planId]);
-    const booker = await getUser(d, plan.booker_id);
-    const sent = await sendPayout([{ email: booker!.paypal_email!, cents: Number(c), note: `Kitty: extra for ${plan.title}`, itemId: `overrun-${planId.slice(0, 8)}` }], `Kitty: extra for ${plan.title}`);
-    await d.tx(async (q) => {
-      await move(q, acct.plan(planId), acct.world, Number(c), { kind: "payout", userId: plan.booker_id, planId, paypalId: sent.batchId, reason: "the extra cost, to the booker" });
-      await q.query(`update plans set status='settled' where id=$1`, [planId]);
-    });
-    return { paid: true, bookerPaid: true };
-  }
-  return { paid: true, bookerPaid: false };
+  const [{ c }] = await d.query<{ c: string }>(`select coalesce(sum(overrun_due_cents),0) as c from plan_members where plan_id=$1`, [planId]);
+  if (left.n > 0 || Number(c) <= 0) return false;
+  const { payOut } = await import("./money-flow");
+  return d.tx(async (q) => {
+    const batch = await payOut(q, plan.booker_id, Number(c), acct.plan(planId), { note: `Kitty: extra for ${plan.title}`, itemId: `overrun-${planId.slice(0, 8)}`, kind: "payout", planId });
+    if (!batch) return false;
+    await q.query(`update plans set status='settled' where id=$1`, [planId]);
+    return true;
+  });
 }

@@ -12,7 +12,9 @@
     "typecheck": "tsc --noEmit",
     "accept:phase1": "tsx scripts/phase1-acceptance.ts",
     "timing:nfr1": "tsx scripts/nfr1-timing.ts",
-    "float:topup": "tsx scripts/top-up-float.ts"
+    "float:topup": "tsx scripts/top-up-float.ts",
+    "accept:phase2": "tsx scripts/phase2-acceptance.ts",
+    "test:edges": "tsx scripts/edge-cases.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "0.5.15",

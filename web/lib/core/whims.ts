@@ -183,26 +183,69 @@ export async function pendingAnswers(userId: string) {
   });
 }
 
+/**
+ * The floater takes a whim back before it becomes a plan (edge-case pass, 8 Nov). Friends' unconfirmed answers drop
+ * out of their lists; nobody is told who floated it (it was anonymous). Once it's a plan, the host cancels the plan.
+ */
+export async function withdrawWhim(ownerId: string, whimId: string) {
+  const d = await db();
+  const [w] = await d.query<{ owner_id: string; status: string; squad_id: string; what: string }>(`select owner_id, status, squad_id, what from whims where id=$1`, [whimId]);
+  if (!w || w.owner_id !== ownerId) throw new Error("That isn't your whim.");
+  if (w.status === "plan") throw new Error("It's already a plan. Cancel the plan instead.");
+  if (w.status !== "floating") throw new Error("That whim isn't floating any more.");
+  const r = await d.query(`update whims set status='withdrawn' where id=$1 and status='floating' returning id`, [whimId]);
+  if (!r.length) throw new Error("It's already a plan. Cancel the plan instead.");
+  await logEvent(d, { userId: ownerId, squadId: w.squad_id, actor: "user", actorId: ownerId, type: "whim.withdrawn", objectType: "whim", objectId: whimId, payload: { what: w.what, text: `You took back "${w.what}".` } });
+  await logEvent(d, { squadId: w.squad_id, actor: "system", type: "whim.withdrawn", objectType: "whim", objectId: whimId, public: { text: `A whim was taken back: ${w.what}`, what: w.what } });
+  return { ok: true };
+}
+
 /** One tap: confirm (or change) prepared answers. Answers are private; only counts move (FR-WHIM-5). */
 export async function confirmAnswers(userId: string, items: { answerId: string; answer?: "yes" | "maybe" | "no" }[]) {
   const d = await db();
   const touched = new Set<string>();
+  const joinedPlans: string[] = [];
+  let skipped = 0;
   await d.tx(async (q) => {
     for (const it of items) {
-      const [a] = await q.query<{ whim_id: string; prepared: string; user_id: string }>(`select whim_id, prepared, user_id from answers where id=$1`, [it.answerId]);
+      const [a] = await q.query<{ whim_id: string; prepared: string; user_id: string; whim_status: string; member: boolean }>(
+        `select a.whim_id, a.prepared, a.user_id, w.status as whim_status,
+                exists (select 1 from memberships m where m.squad_id=w.squad_id and m.user_id=a.user_id and m.left_at is null) as member
+         from answers a join whims w on w.id=a.whim_id where a.id=$1`,
+        [it.answerId],
+      );
       if (!a || a.user_id !== userId) throw new Error("Not your answer.");
+      // Withdrawn or faded, or you've left the squad: nothing to answer any more.
+      if (!a.member || !["floating", "plan"].includes(a.whim_status)) {
+        skipped++;
+        continue;
+      }
       const final = it.answer ?? (a.prepared as "yes" | "maybe" | "no");
       await q.query(`update answers set confirmed=$2, confirmed_at=now() where id=$1`, [it.answerId, final]);
       await logEvent(q, { userId, actor: "user", actorId: userId, type: "answer.confirmed", objectType: "whim", objectId: a.whim_id, payload: { answer: final } });
-      touched.add(a.whim_id);
+      if (a.whim_status === "floating") touched.add(a.whim_id);
+      else {
+        // It already became a plan while you were deciding: a late "yes" or "maybe" puts you in it as "thinking".
+        const [p] = await q.query<{ id: string }>(`select id from plans where whim_id=$1 and status='open'`, [a.whim_id]);
+        if (p) {
+          // They were listed as "invited" when the plan was made; their answer now sets it (never overrides someone already in).
+          await q.query(
+            `insert into plan_members (plan_id, user_id, status) values ($1,$2,$3)
+             on conflict (plan_id, user_id) do update set status=excluded.status where plan_members.status in ('invited','thinking')`,
+            [p.id, userId, final === "no" ? "out" : "thinking"],
+          );
+          joinedPlans.push(p.id);
+        }
+      }
     }
   });
+  if (items.length && skipped === items.length) throw new Error("That whim isn't open any more.");
   const converted: string[] = [];
   for (const whimId of touched) {
     const planId = await maybeConvert(whimId);
     if (planId) converted.push(planId);
   }
-  return { confirmed: items.length, plansCreated: converted };
+  return { confirmed: items.length - skipped, skipped, plansCreated: converted, joinedPlans };
 }
 
 /** When "need at least" people are in (floater + yes answers), the whim becomes a plan. */
@@ -213,7 +256,11 @@ async function maybeConvert(whimId: string): Promise<string | null> {
     [whimId],
   );
   if (!w || w.status !== "floating") return null;
-  const [{ yes }] = await d.query<{ yes: number }>(`select count(*)::int as yes from answers where whim_id=$1 and confirmed='yes'`, [whimId]);
+  // Only people still in the squad count (someone who left can't tip a whim into a plan).
+  const [{ yes }] = await d.query<{ yes: number }>(
+    `select count(*)::int as yes from answers a join memberships m on m.squad_id=$2 and m.user_id=a.user_id and m.left_at is null where a.whim_id=$1 and a.confirmed='yes'`,
+    [whimId, w.squad_id],
+  );
   if (yes + 1 < w.need_at_least) return null;
   const { createPlanFromWhim } = await import("./plans");
   return createPlanFromWhim(w);

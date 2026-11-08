@@ -73,7 +73,10 @@ export async function createPlanFromWhim(w: {
        values ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id`,
       [w.id, w.squad_id, w.owner_id, w.what, w.image_url, w.place, w.starts_at, w.ends_at, w.price_cents ?? 0, w.need_at_least, decideBy.toISOString()],
     );
-    const answers = await q.query<{ user_id: string; confirmed: string | null }>(`select user_id, confirmed from answers where whim_id=$1`, [w.id]);
+    const answers = await q.query<{ user_id: string; confirmed: string | null }>(
+      `select a.user_id, a.confirmed from answers a join memberships m on m.squad_id=$2 and m.user_id=a.user_id and m.left_at is null where a.whim_id=$1`,
+      [w.id, w.squad_id],
+    );
     await q.query(`insert into plan_members (plan_id, user_id, status) values ($1,$2,'thinking')`, [plan.id, w.owner_id]);
     for (const a of answers) {
       const status = a.confirmed === "yes" || a.confirmed === "maybe" ? "thinking" : a.confirmed === "no" ? "out" : "invited";
@@ -209,6 +212,8 @@ export async function respond(userId: string, planId: string, status: "thinking"
   const d = await db();
   const p = await getPlan(d, planId);
   if (p.status !== "open") throw new Error("This plan isn't open any more.");
+  const inSquad = await d.query(`select 1 from memberships where squad_id=$1 and user_id=$2 and left_at is null`, [p.squad_id, userId]);
+  if (!inSquad.length) throw new Error("You're not in this plan's group.");
   await d.tx(async (q) => {
     await q.query(
       `insert into plan_members (plan_id, user_id, status) values ($1,$2,$3) on conflict (plan_id, user_id) do update set status=excluded.status`,
@@ -281,14 +286,42 @@ export async function editPlan(userId: string, planId: string, raw: unknown): Pr
   }
   const keys = Object.keys(changes).filter((k) => COLS[k]);
   if (!keys.length) return { applied: true, rechecked: 0 };
+  await checkEdit(p, changes);
   const sets = keys.map((k, i) => `${COLS[k]} = $${i + 2}`).join(", ");
-  await d.query(`update plans set ${sets}, version = version + 1, status = case when status='on_ice' then 'open' else status end where id=$1`, [
+  // Only while it's still open or on ice: a Pounce or a cancel may have landed since we read it.
+  const updated = await d.query(`update plans set ${sets}, version = version + 1, status = case when status='on_ice' then 'open' else status end where id=$1 and status in ('open','on_ice') returning id`, [
     planId,
     ...keys.map((k) => (changes as Record<string, unknown>)[k]),
   ]);
+  if (!updated.length) throw new Error("This plan can't be changed now.");
   const rechecked = await recheckAffected(planId, keys);
   await logEvent(d, { squadId: p.squad_id, actor: "user", actorId: userId, type: "plan.edited", objectType: "plan", objectId: planId, public: { text: `The plan changed: ${keys.join(", ")}`, fields: keys } });
   return { applied: true, rechecked };
+}
+
+/** Host edits that would break the plan or move money to the wrong place are refused (edge-case pass, 8 Nov). */
+async function checkEdit(p: PlanRow, c: z.infer<typeof Changes>) {
+  const d = await db();
+  const now = Date.now();
+  if (c.bookerId && c.bookerId !== p.booker_id) {
+    // The booker is paid the whole pot, so it must be someone in this plan's group.
+    const ok = await d.query(`select 1 from memberships where squad_id=$1 and user_id=$2 and left_at is null`, [p.squad_id, c.bookerId]);
+    if (!ok.length) throw new Error("The booker has to be someone in this group.");
+  }
+  const starts = c.startsAt !== undefined ? c.startsAt : p.starts_at;
+  const ends = c.endsAt !== undefined ? c.endsAt : p.ends_at;
+  if (c.startsAt && Date.parse(c.startsAt) < now) throw new Error("The new start time is in the past.");
+  if (starts && ends && Date.parse(ends) <= Date.parse(starts)) throw new Error("The end has to be after the start.");
+  if (c.decideBy && Date.parse(c.decideBy) <= now) throw new Error("The deadline has to be in the future.");
+  if (p.status === "on_ice" && Date.parse(c.decideBy ?? p.decide_by) <= now) throw new Error("To reopen it, pick a new deadline.");
+  if (c.needAtLeast != null) {
+    const [{ n }] = await d.query<{ n: number }>(`select count(*)::int as n from memberships where squad_id=$1 and left_at is null`, [p.squad_id]);
+    if (c.needAtLeast > n) throw new Error(`Only ${n} people are in this group, so "need at least" can be ${n} at most.`);
+  }
+  if (c.priceCents === 0 && p.price_cents > 0) {
+    const held = await d.query(`select 1 from paws where plan_id=$1 and status in ('held','pending') limit 1`, [p.id]);
+    if (held.length) throw new Error("People have already pawed in, so the price can't be removed. Lower it instead, or cancel the plan.");
+  }
 }
 
 /** After a change, each affected kitten re-checks its owner privately (only time/price changes matter). */
@@ -315,8 +348,9 @@ async function recheckAffected(planId: string, keys: string[]): Promise<number> 
 
 export async function acceptSuggestion(hostId: string, suggestionId: string) {
   const d = await db();
-  const [s] = await d.query<{ plan_id: string; candidate: Record<string, unknown> }>(`select plan_id, candidate from suggestions where id=$1`, [suggestionId]);
+  const [s] = await d.query<{ plan_id: string; candidate: Record<string, unknown>; status: string }>(`select plan_id, candidate, status from suggestions where id=$1`, [suggestionId]);
   if (!s) throw new Error("Suggestion not found");
+  if (s.status !== "open") throw new Error(s.status === "chosen" ? "That suggestion was already applied." : "That suggestion is closed.");
   const plan = await getPlan(d, s.plan_id);
   if (plan.host_id !== hostId) throw new Error("Only the host can accept suggestions.");
   const res = await editPlan(hostId, s.plan_id, s.candidate);
