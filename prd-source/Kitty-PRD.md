@@ -1,6 +1,6 @@
 # Kitty: Product Requirements Document
 
-**Version 1.44 · 11 Nov 2026 · Status: IN BUILD (Phases 1–2 built and tested; Phase 3+4 (design, app, video) in progress)**
+**Version 1.45 · 11 Nov 2026 · Status: IN BUILD (Phases 1–2 built and tested; Phase 3+4 (design, app, video) in progress)**
 Owner: Ansh Varshney (solo) · Hackathon: *Build What's Next with PayPal and AI* (Devpost) · Deadline: Thu 12 Nov 2026, 12:00 PM PT (Fri 13 Nov, 1:30 AM IST)
 
 > This PRD is the **single source of truth** for the build. Requirement IDs (`FR-…`, `NFR-…`, `AT-…`) are the build spec. To change the spec: edit `prd-source/Kitty-PRD.md`, bump the version in `prd-source/build.py`, add a row to the change log (§E3), and rebuild the PDF with `python prd-source/build.py`.
@@ -1718,7 +1718,7 @@ Kitty/                      repo root (git)
 | **1. Backend core** | Sat 7 – Sun 8 Nov | Referee (shares, rounding, invariant, fits, partial Pounce, paw-up, cover, tag along) with unit tests · sign-up APIs (§B1) · kitten runtime, prepared answers, friend's-kitten ask-owner (§B2) · House Rules R1–R7 + personal-rule guardrail (§B3) · Treat Jar ledger (§B4) · squads, mini-squads, chat events over SSE (§B5) · whims from text/screenshot/link (§B6) · suggestions + 2-round loop guard (§B7) · plans (§B8) · paw in / Pounce from savings, jar and PayPal (§B9) · receipts + leftovers to source (§B10) · fun-budget check + calendar clash check (§B20 rules) · event log for the Kitten Diary (§B19) · core kitten chat tools (§B18) | AT-1 to AT-12, AT-14 to AT-16, AT-19, AT-21 to AT-23 pass via API / dev console |
 | **2. Backend non-core** | Mon 9 Nov | "I paid" cards, Yarn, Untangle (§B11) · Nine Lives (§B12) · Kitty Party with per-person savings (§B13) · Catnip with auto-delete (§B14) · The Bowl (§B15) · Meows + alerts (§B16) · purrs, tags, Top Cat, streaks (§B17) · My Month data (§B20) · remaining chat tools (§B18) · Render Workflows jobs: deadlines, Meows, party checks, Catnip clean-up · export: MCP, calendar feed, CSV (§B21) | AT-13, AT-17, AT-18, AT-24 pass; scheduled jobs run on Render |
 | **3+4. Design, app and video (merged 8 Nov)** | Sun 8 – Wed 11 Nov | **Design (Paper first):** the kitten in code (done 8 Nov: `/dev/kitten`) → design brief and tokens (§B22 design pass) → a 1–2 call Paper test → foundations page (~8–10 calls) → 8 key screens (~16–24): Meows home; "+" whim composer with the kitten reading and sending; squad rooftop with Plans; plan card + paw-in sheet + Pounce; Yarn + Untangle; My Month; My Kitten (incl. adoption); Demo World entry and the phone frame → iterate (~15–20) → read back approved frames (~8–10). **Build:** the 5-tab app (§B22): Meows · Squads (rooftop, Chat, Plans, Yarn, Party, Bowl, My settings) · "+" (whim, I paid, ask for help) · My Month · My Kitten (rules, Treat Jar, Diary, help requests); sign-up's 5 pages; money-moment animations with the owner's own kitten; **mobile-app shell + phone frame on laptop + installable PWA (FR-UX-1, 7, 8)**. **Then:** Demo World (seed, "let the squad respond", nightly reseed, pre-generated text, §B23), polish on the screens the video shows, video script, recording and upload, README. | Every Phase 1–2 flow works from the real screens, inside the phone frame on a laptop and full screen on a phone; AT-20 passes; the video is uploaded; the README is complete |
-| **5. Submit** | Thu 12 Nov | **Upgrade Render first:** the owner adds a card in Render; we switch `render.yaml` (or the dashboard) to web **Starter** + database **Basic 256 MB**, upgraded in place so data is kept; confirm `/api/health` and that the app no longer sleeps. Then: buffer for fixes; make the GitHub repo public; Devpost entry (description, built with, AI tools, links); final checks; APIMatic claim form. | Render on paid plans (awake, database won't expire); submitted by evening IST (hard deadline Fri 13 Nov, 01:30 IST) |
+| **5. Submit** | Thu 12 Nov | **Upgrade Render first:** the owner adds a card in Render; we switch `render.yaml` (or the dashboard) to web **Starter** + database **Basic 256 MB**, upgraded in place so data is kept; confirm `/api/health` and that the app no longer sleeps. On Starter the app runs its own jobs every 15 minutes (v1.45), so no cron service is needed. Then: buffer for fixes; make the GitHub repo public; Devpost entry (description, built with, AI tools, links); final checks; APIMatic claim form. | Render on paid plans (awake, database won't expire); submitted by evening IST (hard deadline Fri 13 Nov, 01:30 IST) |
 
 **Coverage check:** every feature in Part B has a phase:
 - Phase 1: §B1–B10, §B18 core, §B19 log, §B20 checks.
@@ -2116,6 +2116,20 @@ The owner approved the flows and asked to see them in the real app, then change 
 
 **The owner's flow** is §B9 "Tag along". Decided along the way: one ask per person per plan; the money goes to the jar holding the pot (the booker's, which is the host's unless someone else is booking); open until the plan starts.
 
+### Agreeing is paying (11 Nov, v1.44)
+**The rule (owner).** Agreeing and paying are one step (FR-JAR-8). Floating a whim, a Yes, Join and asking to tag along set the share aside right then; a short jar is asked to refill first, and the step finishes once, when the money lands. The old code only checked the jar when the plan was made, so a Yes could be followed by a refill card.
+
+**How.** Set-aside shares sit in the person's held jar (`whim_holds`, and `held_jar`/`held_savings` on tag asks; migration 022). When the plan is made they become that person's money in it, to the cent, and anything over goes straight back. They go back if the whim is taken back, fades or changes, the answer becomes No, the host says No, or the plan starts unanswered.
+
+**Tests (11 Nov).** Unit 104/104 · edge cases 197/197 · Phase 1 22/22 · Phase 2 12/12. In the app: a Yes with $2 in the jar opened the refill sheet straight away and sent nothing; a Yes with enough set $5 aside and made the plan with every share already in.
+
+### Phase 5: submit (11 Nov)
+- **Committed and pushed** (`2f2abf0`): the whole app. Render deployed it; migrations 007–022 ran on Render Postgres; one live jobs run came back clean; local login is refused on the live site.
+- **Secrets:** every file and the whole git history were scanned against each `.env` value and sandbox password: none found.
+- **Payouts:** the sandbox business account holds $15,733.71; a $5 payout went through.
+- **The app runs its own jobs** every 15 minutes on Render (`web/instrumentation.ts` → `lib/core/job-timer.ts`), replacing the planned Render Cron Job: no extra service, cost or secret. GitHub's free schedule turned out to run only every few hours, so once the web service is on Starter (always on), the timer is what keeps deadlines on time.
+- **Owner's steps:** add a card in Render and switch the web service to Starter and the database to Basic 256 MB; decide the judges' sandbox login; make the repo public; the Devpost entry (draft in `submission/devpost-entry.md`), the video and the APIMatic claim form.
+
 ## D9 README must include
 - **FR-DOC-1** Setup, and the sandbox PayPal logins judges use.
 - **FR-DOC-2** AI tools and models used, and how.
@@ -2224,3 +2238,4 @@ The owner approved the flows and asked to see them in the real app, then change 
 | 1.42 | 11 Nov 2026 | Owner's clarification: I paid another way marks the booking paid (it doesn't open the receipt). Pounce → Pay from my Treat Jar or I paid another way → Add the receipt, on every card and the plan page (§B9, §B10). |
 | 1.43 | 11 Nov 2026 | From owner testing: a yes to someone whose jar is short now tells everyone what's happening (the newcomer, the host and everyone in), and the plan shows them as Joining until their money lands (§B9). |
 | 1.44 | 11 Nov 2026 | Owner's rule: agreeing and paying are one step (FR-JAR-8). Floating a whim, a Yes, joining and asking to tag along set the share aside right then; a short jar is refilled first, and the step finishes when the money lands. No refill cards after someone has agreed. Set-aside money goes back if it isn't used (§B6, FR-PLAN-10, §B9, FR-POUNCE-14..16). |
+| 1.45 | 11 Nov 2026 | Phase 5 started: everything committed and deployed; secrets scan clean; the app runs its own scheduled jobs on Render instead of a cron service; README rewritten for the finished app; Devpost draft written (§D1, §D8). |

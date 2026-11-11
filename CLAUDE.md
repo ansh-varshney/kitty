@@ -1,7 +1,7 @@
 # Kitty: PayPal AI Hackathon ("Build What's Next with PayPal and AI", Devpost)
 
 ## Source of truth: ALWAYS the latest PRD
-- The **only** current spec is the newest `Kitty-PRD-v*.pdf` in this folder: the highest version number (v1.44 as of 11 Nov 2026; note 1.10+ is newer than 1.9).
+- The **only** current spec is the newest `Kitty-PRD-v*.pdf` in this folder: the highest version number (v1.45 as of 11 Nov 2026; note 1.10+ is newer than 1.9).
 - Its exact text is `prd-source/Kitty-PRD.md`. **Read that file for any spec question**: it's the same content and easier to search. Check its title line ("Version X.Y") and the change log (§E3) to confirm you have the newest version.
 - **Never** use anything in `_superseded/` (old PRDs v1.0–v1.1, early ideation files). They are out of date.
 - Requirement IDs (`FR-…`, `NFR-…`, `AT-…`) are the build spec. Reference them in code and commits.
@@ -17,7 +17,7 @@
 - **Phase 2 (backend non-core) is built and tested** (7 Nov 2026): `npm run accept:phase2` 12/12 (AT-13, AT-17, AT-18, AT-24 + Bowl, Meows, purrs, My Month, chat, export, jobs). Scheduled jobs: `POST /api/v1/jobs/run` with `x-jobs-key` (JOBS_KEY), called every 15 min by `.github/workflows/kitty-jobs.yml` (secret KITTY_JOBS_KEY).
 - **Edge-case pass (8 Nov 2026):** `npm run test:edges` 111/111 (baseline 22/74; includes Settle up and kitten reminders). Added undo actions (withdraw whim, cancel plan, remove/fix card, take back pledge, close Bowl, leave squad), no-overdraw ledger, one-at-a-time money actions (`lib/core/locks.ts`, single web instance), migration 006. Findings in PRD §D8. Not yet committed unless the owner said so.
 - **Phase 3+4 merged (8 Nov 2026): design first, in Paper**, then build (PRD §D1, §B22 design pass). The kitten is built in code: `web/components/kitten/Kitten.tsx`, options in `web/lib/kitten/looks.ts`, mood/pose from events in `web/lib/kitten/moments.ts`, preview at `/dev/kitten`. The owner picks only look, name, personality (FR-UX-9). Paper free plan = 100 MCP calls/week: estimate calls before each Paper stage.
-- **The app is built (8 Nov), owner is testing it in the real app and will ask for edits.** `/` is PayPal login; `web/app/(phone)` holds the screens. PayPal login refuses localhost, so on a local dev server only, the login button opens `/local-login`, where you pick a sandbox person (a real, not demo, account). `POST /api/v1/dev/new-user` (dev key) makes a throwaway one.
+- **Phase 3+4 is done and committed (11 Nov, `2f2abf0`), and deployed to Render. Phase 5 (submit) is under way; the owner makes the demo video: do nothing for it.** `/` is PayPal login; `web/app/(phone)` holds the screens. PayPal login refuses localhost, so on a local dev server only, the login button opens `/local-login`, where you pick a sandbox person (a real, not demo, account). `POST /api/v1/dev/new-user` (dev key) makes a throwaway one.
 - **Owner's rules for the app (8 Nov).** No Demo World: PayPal login only, real accounts (PRD §B23). Every kitten is alive and every action plays a moment (FR-UX-11). The kitten chat is pinned at the top of Squads (FR-CHAT-5).
 - The next phase starts only when the owner says so. Phases (PRD §D1): 0 setup → 1 backend core → 2 backend non-core → 3 simple 5-tab app → 4 video, polish → 5 submit.
 - Before building each feature, do a short detail pass and record it in the PRD as a minor version.
@@ -33,7 +33,7 @@
   1. The owner adds a card in Render. Never enter card details yourself.
   2. Upgrade in place to web **Starter** + database **Basic 256 MB**. Usage comes out of Render credits.
   3. Confirm `/api/health`.
-  4. Scheduler: the Starter web plan does NOT run timers itself. Add a Render **Cron Job** service (paid, ~$1/mo from credits) that every 15 min runs `curl -X POST -H "x-jobs-key: $JOBS_KEY" https://kitty-web.onrender.com/api/v1/jobs/run`. Once it works, disable/delete `.github/workflows/kitty-jobs.yml` (the free GitHub stand-in) so jobs aren't triggered twice (harmless thanks to the jobs lock, but wasteful). Starter also never sleeps, so the "keep awake" ping isn't needed.
+  4. Scheduler: the app runs its own jobs every 15 min on Render (`web/instrumentation.ts`, `lib/core/job-timer.ts`; v1.45), so no cron service is needed. Once the web service is on Starter (never sleeps), disable `.github/workflows/kitty-jobs.yml` (GitHub's free schedule only fires every few hours anyway).
 
 ## Code
 - The repo root is this folder. The app is in `web/` (Next.js 16; read `web/AGENTS.md`: the APIs changed).
