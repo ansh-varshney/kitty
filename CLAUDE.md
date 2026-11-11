@@ -12,7 +12,7 @@
   4. Run `python prd-source/build.py` from this folder. It writes the new PDF and moves older PDFs into `_superseded/`.
 
 ## Status
-- **Phase 0 is complete** (7 Nov 2026). Live app: https://kitty-web.onrender.com (Render free plans). PayPal webhook ID (ID in `.env` as `PAYPAL_WEBHOOK_ID`).
+- **Phase 0 is complete** (7 Nov 2026). Live app: https://kitty-web.onrender.com (Render paid plans since 11 Nov; see Hosting). PayPal webhook ID (ID in `.env` as `PAYPAL_WEBHOOK_ID`).
 - **Phase 1 (backend core) is complete** (7 Nov 2026): `npm run accept:phase1` 24/24 on the real sandbox with Groq as the AI (after the owner funded the sandbox business account). Findings are in PRD §D8 "Phase 1: results". Not yet pushed to Render unless the owner said so.
 - **Phase 2 (backend non-core) is built and tested** (7 Nov 2026): `npm run accept:phase2` 12/12 (AT-13, AT-17, AT-18, AT-24 + Bowl, Meows, purrs, My Month, chat, export, jobs). Scheduled jobs: `POST /api/v1/jobs/run` with `x-jobs-key` (JOBS_KEY), called every 15 min by `.github/workflows/kitty-jobs.yml` (secret KITTY_JOBS_KEY).
 - **Edge-case pass (8 Nov 2026):** `npm run test:edges` 111/111 (baseline 22/74; includes Settle up and kitten reminders). Added undo actions (withdraw whim, cancel plan, remove/fix card, take back pledge, close Bowl, leave squad), no-overdraw ledger, one-at-a-time money actions (`lib/core/locks.ts`, single web instance), migration 006. Findings in PRD §D8. Not yet committed unless the owner said so.
@@ -28,12 +28,10 @@
   4. Record the key findings in PRD §D8.
 
 ## Hosting (Render)
-- Render currently runs on **free** plans: the app sleeps after 15 min idle, and the free database **expires ~7 Dec 2026**.
-- **Phase 5, before submitting:**
-  1. The owner adds a card in Render. Never enter card details yourself.
-  2. Upgrade in place to web **Starter** + database **Basic 256 MB**. Usage comes out of Render credits.
-  3. Confirm `/api/health`.
-  4. Scheduler: the app runs its own jobs every 15 min on Render (`web/instrumentation.ts`, `lib/core/job-timer.ts`; v1.45), so no cron service is needed. Once the web service is on Starter (never sleeps), disable `.github/workflows/kitty-jobs.yml` (GitHub's free schedule only fires every few hours anyway).
+- **Paid plans since 11 Nov 2026**, switched in place by the owner, paid from the $50 hackathon Render credits (~$13/month): web `starter` (Render now calls it 0.5c-512mb), database `basic-256mb` (0.1c-256mb). `render.yaml` matches. The owner wants to spend nothing from their card: keep usage inside the credits.
+- Render renamed "Instance Type" to **Compute Plan**: change it on each service's **Compute** page, not Settings.
+- **Turn off after the winners are announced (~21 Dec 2026):** web back to Free, delete the database (a paid database can't go back to Free; take a backup first if wanted).
+- Scheduler: the app runs its own jobs every 15 min on Render (`web/instrumentation.ts`, `lib/core/job-timer.ts`; v1.45). `/api/health` shows `jobsTimer.lastRanAt`. The GitHub workflow `kitty-jobs.yml` is disabled (it only fired every few hours); re-enable it with `gh workflow enable kitty-jobs.yml` if the web service ever goes back to Free.
 
 ## Code
 - The repo root is this folder. The app is in `web/` (Next.js 16; read `web/AGENTS.md`: the APIs changed).
