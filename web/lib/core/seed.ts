@@ -9,12 +9,12 @@ import { testCardPayment } from "../paypal/holds";
  * payments use the sandbox test card server-side; their emails are the uploaded sandbox accounts.
  */
 export const DEMO_FRIENDS = [
-  { key: "ava", name: "Ava", kitten: "Mochi", breed: "siamese", gender: "woman", birth: "2001-12-03", interests: ["travel", "food", "concerts"] },
-  { key: "jordan", name: "Jordan", kitten: "Biscuit", breed: "persian", gender: "non-binary", birth: "2000-04-17", interests: ["games", "movies", "food"] },
-  { key: "tyler", name: "Tyler", kitten: "Miso", breed: "bengal", gender: "man", birth: "1999-08-22", interests: ["sports", "nightlife", "travel"] },
-  { key: "zoe", name: "Zoe", kitten: "Pickles", breed: "ragdoll", gender: "woman", birth: "2002-02-11", interests: ["concerts", "wellness", "food"] },
-  { key: "marcus", name: "Marcus", kitten: "Tofu", breed: "tabby", gender: "man", birth: "2000-10-30", interests: ["outdoors", "sports", "games"] },
-  { key: "judge", name: "Judge", kitten: "Noodle", breed: "shorthair", gender: "prefer not to say", birth: "1998-06-01", interests: ["food", "travel", "movies"] },
+  { key: "ava", name: "Ava", kitten: "Mochi", breed: "siamese", gender: "woman", birth: "2001-12-03", interests: ["travel", "food", "concerts"], look: { fur: "ginger", pattern: "tabby", accessory: "bell", eyes: "amber" } },
+  { key: "jordan", name: "Jordan", kitten: "Biscuit", breed: "persian", gender: "non-binary", birth: "2000-04-17", interests: ["games", "movies", "food"], look: { fur: "cocoa", pattern: "socks", accessory: "scarf", eyes: "green" } },
+  { key: "tyler", name: "Tyler", kitten: "Miso", breed: "bengal", gender: "man", birth: "1999-08-22", interests: ["sports", "nightlife", "travel"], look: { fur: "midnight", pattern: "plain", accessory: "glasses", eyes: "amber" } },
+  { key: "zoe", name: "Zoe", kitten: "Pickles", breed: "ragdoll", gender: "woman", birth: "2002-02-11", interests: ["concerts", "wellness", "food"], look: { fur: "snow", pattern: "patches", accessory: "bow", eyes: "blue" } },
+  { key: "marcus", name: "Marcus", kitten: "Tofu", breed: "tabby", gender: "man", birth: "2000-10-30", interests: ["outdoors", "sports", "games"], look: { fur: "smoke", pattern: "tabby", accessory: "none", eyes: "green" } },
+  { key: "judge", name: "Judge", kitten: "Noodle", breed: "shorthair", gender: "prefer not to say", birth: "1998-06-01", interests: ["food", "travel", "movies"], look: { fur: "honey", pattern: "plain", accessory: "bow", eyes: "blue" } },
 ] as const;
 
 export type DemoWorld = { users: Record<string, string>; squadId: string };
@@ -31,8 +31,8 @@ export async function seedDemoWorld(opts: { jarTopUpCents?: number; realTopUps?:
     );
     users[f.key] = u.id;
     await d.query(
-      `insert into kittens (user_id, name, breed, look) values ($1,$2,$3,$4) on conflict (user_id) do update set name=excluded.name, breed=excluded.breed`,
-      [u.id, f.kitten, f.breed, JSON.stringify({ fur: "ginger", pattern: "tabby", accessory: "bell" })],
+      `insert into kittens (user_id, name, breed, look) values ($1,$2,$3,$4) on conflict (user_id) do update set name=excluded.name, breed=excluded.breed, look=excluded.look`,
+      [u.id, f.kitten, f.breed, JSON.stringify(f.look)],
     );
     await setBasicRules(d, u.id, { funBudgetCents: 30000, freeHandCents: 2000, helpCents: 2500 });
   }

@@ -215,11 +215,13 @@ export async function startGiftPlan(userId: string, groupId: string, ideaId: str
        values ($1,$2,$2,$3,$4,'total',$5,'host',$6) returning id`,
       [g.squad_id, userId, `Gift: ${idea.title}`.slice(0, 80), idea.price_cents, Math.min(2, joined.length), decideBy],
     );
-    for (const j of joined) await q.query(`insert into plan_members (plan_id, user_id, status) values ($1,$2,'thinking') on conflict do nothing`, [p.id, j.user_id]);
+    for (const j of joined) await q.query(`insert into plan_members (plan_id, user_id, status, joined_at) values ($1,$2,$3,$4) on conflict do nothing`, [p.id, j.user_id, j.user_id === userId ? "in" : "thinking", j.user_id === userId ? new Date().toISOString() : null]);
     await q.query(`update gift_groups set plan_id=$2 where id=$1`, [groupId, p.id]);
     await logEvent(q, { squadId: g.squad_id, actor: "user", actorId: userId, type: "catnip.plan", objectType: "plan", objectId: p.id, public: { text: `The gift is chosen: ${idea.title}. Paw in to chip in.` } });
     return p;
   });
+  const { syncShares } = await import("./pounce");
+  await syncShares(plan.id);
   return { planId: plan.id };
 }
 
@@ -254,8 +256,8 @@ export async function catnipCleanup(now = new Date()) {
 /** For Meows/alerts: open gift invites for this user (never shown to the birthday person). */
 export async function myGiftInvites(userId: string) {
   const d = await db();
-  return d.query<{ group_id: string; for_name: string; birthday: string; status: string }>(
-    `select g.id as group_id, u.name as for_name, g.birthday::text as birthday, m.status from gift_members m join gift_groups g on g.id=m.group_id
+  return d.query<{ group_id: string; squad_id: string | null; for_name: string; birthday: string; status: string }>(
+    `select g.id as group_id, g.squad_id, u.name as for_name, g.birthday::text as birthday, m.status from gift_members m join gift_groups g on g.id=m.group_id
      join users u on u.id=g.birthday_user where m.user_id=$1 and g.status <> 'deleted' and m.status in ('invited','joined')`,
     [userId],
   );

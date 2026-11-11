@@ -7,6 +7,8 @@ import { paidParts } from "./pounce";
 import { leftovers, overrun } from "../referee/settle";
 import { readReceipt } from "../kitten/ai";
 import { refundCapture, testCardPayment } from "../paypal/holds";
+import { collect, refillOrAsk } from "./money-flow";
+import { jarBalances } from "./month";
 import { withLock } from "./locks";
 
 /** Receipts and leftovers (PRD §B10, FR-SETTLE-1..4, AT-12). */
@@ -33,15 +35,23 @@ export async function submitReceipt(bookerId: string, planId: string, input: { i
  * The booker confirms the total. Under budget → the leftover goes back in proportion to what each person
  * paid, to each source; the booker returns everyone else's part. Over budget (≤15%) → each member is asked.
  */
-export async function confirmReceipt(bookerId: string, receiptId: string, cents: number) {
+export async function confirmReceipt(bookerId: string, receiptId: string, cents: number, refill?: boolean) {
   const d = await db();
   const [r0] = await d.query<{ plan_id: string }>(`select plan_id from receipts where id=$1`, [receiptId]);
   if (!r0) throw new Error("Not your receipt.");
   // One settle at a time per plan: a double tap must not refund twice.
-  return withLock(`pounce:${r0.plan_id}`, () => confirmReceiptNow(bookerId, receiptId, cents));
+  return withLock(`pounce:${r0.plan_id}`, () => confirmReceiptNow(bookerId, receiptId, cents, undefined, refill));
 }
 
-async function confirmReceiptNow(bookerId: string, receiptId: string, cents: number) {
+/** The booker's PayPal payment of the leftover arrived: now everyone can be paid back (FR-SHOW-2). */
+export async function finishLeftover(receiptId: string, cents: number, captureId: string | null) {
+  const d = await db();
+  const [r] = await d.query<{ plan_id: string; booker_id: string }>(`select plan_id, booker_id from receipts where id=$1`, [receiptId]);
+  if (!r) throw new Error("No such receipt.");
+  return withLock(`pounce:${r.plan_id}`, () => confirmReceiptNow(r.booker_id, receiptId, cents, { captureId }));
+}
+
+async function confirmReceiptNow(bookerId: string, receiptId: string, cents: number, paidBack?: { captureId: string | null }, refill?: boolean) {
   const d = await db();
   const [r] = await d.query<{ plan_id: string; booker_id: string; status: string }>(`select plan_id, booker_id, status from receipts where id=$1`, [receiptId]);
   if (!r || r.booker_id !== bookerId) throw new Error("Not your receipt.");
@@ -61,8 +71,13 @@ async function confirmReceiptNow(bookerId: string, receiptId: string, cents: num
     const bookerPart = parts.filter((p) => p.userId === bookerId).reduce((a, p) => a + p.cents, 0);
     const returnCents = leftover - bookerPart;
     const booker = await getUser(d, bookerId);
-    if (!booker?.is_demo && returnCents > 0) throw new Error("Returning a leftover for real users needs a PayPal approval (Phase 3 screens).");
-    const back = returnCents > 0 ? await testCardPayment({ cents: returnCents, customId: `leftover:${plan.id.slice(0, 8)}` }) : null;
+    // The money went to the booker's PayPal at the Pounce, so a real booker sends the rest back, from their Treat Jar.
+    const fromJar = !paidBack && !booker?.is_demo && returnCents > 0;
+    if (fromJar) {
+      const { availableCents } = await jarBalances(d, bookerId);
+      if (availableCents < returnCents) return refillOrAsk(bookerId, returnCents - availableCents, availableCents, { refill, after: `leftover:${receiptId}:${cents}`, reason: `leftover from ${plan.title}` });
+    }
+    const back = paidBack ?? (returnCents > 0 && !fromJar ? await testCardPayment({ cents: returnCents, customId: `leftover:${plan.id.slice(0, 8)}` }) : null);
 
     const done: { userId: string; source: string; cents: number; refundId?: string; captureId?: string }[] = [];
     for (const p of parts.filter((x) => x.userId !== bookerId)) {
@@ -74,6 +89,7 @@ async function confirmReceiptNow(bookerId: string, receiptId: string, cents: num
       } else done.push({ userId: p.userId, source: p.source, cents: p.cents });
     }
     await d.tx(async (q) => {
+      if (fromJar) await move(q, acct.jar(bookerId), acct.plan(plan.id), returnCents, { kind: "leftover_return", userId: bookerId, planId: plan.id, reason: "you returned everyone else's leftover, from your Treat Jar" });
       if (back) await move(q, acct.world, acct.plan(plan.id), returnCents, { kind: "leftover_return", userId: bookerId, planId: plan.id, paypalId: back.captureId, reason: "the booker returned everyone else's leftover" });
       // The booker keeps their own part (it's already in their PayPal from the payout). Record it as a refund
       // so their month and their net paid (used by later tag-alongs) are right.
@@ -119,25 +135,39 @@ async function confirmReceiptNow(bookerId: string, receiptId: string, cents: num
 }
 
 /** A member pays their part of an overrun; when everyone has, the booker is paid the extra (FR-SETTLE-3). */
-export async function payOverrun(userId: string, planId: string) {
-  return withLock(`overrun:${planId}:${userId}`, () => payOverrunNow(userId, planId));
+export async function payOverrun(userId: string, planId: string, refill?: boolean) {
+  return withLock(`overrun:${planId}:${userId}`, () => payOverrunNow(userId, planId, refill));
 }
 
-async function payOverrunNow(userId: string, planId: string) {
+async function payOverrunNow(userId: string, planId: string, refill?: boolean) {
   const d = await db();
   const plan = await getPlan(d, planId);
   if (plan.status !== "pounced") throw new Error("Nothing to pay: this plan is settled.");
   const [m] = await d.query<{ overrun_due_cents: number; overrun_paid: boolean }>(`select overrun_due_cents, overrun_paid from plan_members where plan_id=$1 and user_id=$2`, [planId, userId]);
   if (!m || m.overrun_paid || m.overrun_due_cents <= 0) throw new Error("Nothing to pay.");
-  const user = await getUser(d, userId);
-  if (!user?.is_demo) throw new Error("Paying an overrun for real users needs a PayPal approval (Phase 3 screens).");
-  const pay = await testCardPayment({ cents: m.overrun_due_cents, customId: `overrun:${userId.slice(0, 8)}` });
-  await d.tx(async (q) => {
-    await move(q, acct.world, acct.plan(planId), m.overrun_due_cents, { kind: "overrun", userId, planId, paypalId: pay.captureId, reason: "your part of the extra cost" });
-    await q.query(`update plan_members set overrun_paid=true where plan_id=$1 and user_id=$2`, [planId, userId]);
-  });
+  // From the Treat Jar, with a refill if it's short (§B10, FR-JAR-7).
+  const c = await collect(userId, m.overrun_due_cents, acct.plan(planId), { ledgerKind: "overrun", reason: `your part of the extra cost for ${plan.title}`, after: `overrun:${planId}`, planId, refill });
+  if (!c.done) return c.next;
+  return finishOverrun(planId, userId);
+}
+
+/** Their part arrived (Treat Jar, or back from PayPal). */
+async function finishOverrun(planId: string, userId: string) {
+  const d = await db();
+  await d.query(`update plan_members set overrun_paid=true where plan_id=$1 and user_id=$2`, [planId, userId]);
   const bookerPaid = await payOverrunToBooker(planId);
   return { paid: true, bookerPaid };
+}
+
+/** Back from PayPal with a real user's part of an extra cost. */
+export async function finishOverrunPayment(planId: string, userId: string, cents: number, captureId: string | null) {
+  return withLock(`overrun:${planId}:${userId}`, async () => {
+    const d = await db();
+    const [m] = await d.query<{ overrun_paid: boolean }>(`select overrun_paid from plan_members where plan_id=$1 and user_id=$2`, [planId, userId]);
+    if (!m || m.overrun_paid) return { paid: true, bookerPaid: false };
+    await d.tx((q) => move(q, acct.world, acct.plan(planId), cents, { kind: "overrun", userId, planId, paypalId: captureId, reason: "your part of the extra cost" }));
+    return finishOverrun(planId, userId);
+  });
 }
 
 /**
@@ -151,11 +181,10 @@ export async function payOverrunToBooker(planId: string) {
   const [left] = await d.query<{ n: number }>(`select count(*)::int as n from plan_members where plan_id=$1 and overrun_due_cents>0 and not overrun_paid`, [planId]);
   const [{ c }] = await d.query<{ c: string }>(`select coalesce(sum(overrun_due_cents),0) as c from plan_members where plan_id=$1`, [planId]);
   if (left.n > 0 || Number(c) <= 0) return false;
-  const { payOut } = await import("./money-flow");
   return d.tx(async (q) => {
-    const batch = await payOut(q, plan.booker_id, Number(c), acct.plan(planId), { note: `Kitty: extra for ${plan.title}`, itemId: `overrun-${planId.slice(0, 8)}`, kind: "payout", planId });
-    if (!batch) return false;
+    await move(q, acct.plan(planId), acct.jar(plan.booker_id), Number(c), { kind: "pot_to_booker", userId: plan.booker_id, planId, reason: `the extra for ${plan.title}` });
     await q.query(`update plans set status='settled' where id=$1`, [planId]);
+    await logEvent(q, { userId: plan.booker_id, squadId: plan.squad_id, actor: "system", type: "overrun.paid", objectType: "plan", objectId: planId, payload: { cents: Number(c), text: `Everyone's part of the extra for "${plan.title}" (${fmt(Number(c))}) is in your Treat Jar.` } });
     return true;
   });
 }

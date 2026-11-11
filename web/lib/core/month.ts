@@ -5,10 +5,10 @@ import type { Window } from "../referee/time";
 /** My Month data the referee needs in Phase 1: spending vs fun budget, and the calendar (PRD §B20). */
 
 // leftover_return is NOT spending: it is the booker handing back other people's money (or a memo for their own part).
-const SPEND_KINDS = ["capture", "jar_spend", "savings_spend", "tag_along", "overrun"];
-const REFUND_KINDS = ["refund"];
+export const SPEND_KINDS = ["capture", "jar_spend", "savings_spend", "tag_along", "overrun"];
+export const REFUND_KINDS = ["refund"];
 
-function monthRange(now = new Date()) {
+export function monthRange(now = new Date()) {
   return {
     start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
     end: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString(),
@@ -87,7 +87,13 @@ export async function committedCents(q: Queryable, userId: string, excludePlanId
      where p.user_id=$1 and p.status in ('pending','held') and pl.status in ('open','pouncing') and ($2::uuid is null or pl.id <> $2)`,
     [userId, excludePlanId ?? null],
   );
-  return Number(r.c ?? 0);
+  // Shares set aside on a whim, or to tag along, are spoken for too (FR-JAR-8).
+  const [o] = await q.query<{ c: string | null }>(
+    `select coalesce((select sum(jar_cents + savings_cents) from whim_holds where user_id=$1 and status='held'),0)
+          + coalesce((select sum(held_jar + held_savings) from tag_requests where user_id=$1 and status='asked'),0) as c`,
+    [userId],
+  );
+  return Number(r.c ?? 0) + Number(o.c ?? 0);
 }
 
 export async function jarBalances(q: Queryable, userId: string) {

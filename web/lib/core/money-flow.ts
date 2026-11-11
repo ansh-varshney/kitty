@@ -9,48 +9,68 @@ import { sendPayout } from "../paypal/payouts";
 import { baseUrl } from "../env";
 
 /**
- * Money in and money out for Phase 2 features (Yarn, Bowl, Nine Lives, Kitty Party). One place decides where money
- * comes from: the Treat Jar when the kitten may (within the free hand, FR-YARN-4), otherwise PayPal. Demo friends
- * pay with the sandbox test card; real users approve a PayPal checkout (the return route finishes it).
+ * Money in and money out for friends' money (Yarn, Nine Lives, extra costs, tag along). Every payment comes from the
+ * Treat Jar (FR-JAR-7). If it's short, a person is asked to refill it for the difference: that refill is the only
+ * PayPal payment anyone ever approves. Demo friends can't approve anything, so they use the sandbox test card.
  */
+
+export type JarShort = { ok: false; code: "jar_short"; shortCents: number; jarCents: number };
+export type Refill = { ok: true; approveUrl: string };
 
 export type Collected =
   | { done: true; source: "jar" | "paypal"; paypalId: string | null }
-  | { done: false; source: "paypal"; approveUrl: string };
+  | { done: false; next: JarShort | Refill };
+
+/**
+ * The jar is short. First the app is told, so it can ask. Once they've said yes (`refill`), PayPal opens for just the
+ * difference. `after` is what to finish when they come back (see the return/jar route).
+ */
+export async function refillOrAsk(userId: string, shortCents: number, jarCents: number, opts: { refill?: boolean; after: string; reason: string }): Promise<JarShort | Refill> {
+  if (!opts.refill) return { ok: false, code: "jar_short", shortCents, jarCents };
+  const base = baseUrl();
+  const { approveUrl } = await createCheckout({
+    cents: shortCents,
+    customId: `jar:${userId}|${opts.after}`,
+    description: `Kitty Treat Jar refill: ${opts.reason}`.slice(0, 120),
+    returnUrl: `${base}/api/v1/return/jar`,
+    cancelUrl: `${base}/?cancelled=jar`,
+  });
+  return { ok: true, approveUrl };
+}
+
+/** Pays from the Treat Jar if the kitten may do it alone (within free hand, enough in the jar). Otherwise does nothing. */
+export async function payFromJar(userId: string, cents: number, to: string, opts: { kind: MoneyAction["kind"]; squadId?: string | null; ledgerKind: string; reason: string; planId?: string | null }): Promise<boolean> {
+  const d = await db();
+  const rules = (await listRules(d, userId)).filter((r) => r.type !== "R1"); // settling isn't new spending
+  const jar = await jarBalances(d, userId);
+  const dec = decide({ kind: opts.kind, cents, source: "jar", squadId: opts.squadId }, { rules, jarAvailableCents: jar.availableCents, monthSpentCents: 0, monthCommittedCents: 0 });
+  if (dec.mode !== "auto") return false;
+  await d.tx((q) => move(q, acct.jar(userId), to, cents, { kind: opts.ledgerKind, userId, planId: opts.planId ?? null, reason: `${opts.reason} (Treat Jar, within your free hand)` }));
+  return true;
+}
 
 export async function collect(
   userId: string,
   cents: number,
   to: string,
-  opts: { kind: MoneyAction["kind"]; squadId?: string | null; ledgerKind: string; reason: string; customId: string; planId?: string | null; useJar?: boolean },
+  opts: { ledgerKind: string; jarKind?: string; reason: string; after: string; planId?: string | null; refill?: boolean },
 ): Promise<Collected> {
   if (!Number.isInteger(cents) || cents <= 0) throw new Error("Pick an amount.");
   const d = await db();
   const user = await getUser(d, userId);
   if (!user) throw new Error("Unknown user");
-  if (opts.useJar !== false) {
-    const rules = (await listRules(d, userId)).filter((r) => r.type !== "R1"); // settling isn't new spending
-    const jar = await jarBalances(d, userId);
-    const dec = decide({ kind: opts.kind, cents, source: "jar", squadId: opts.squadId }, { rules, jarAvailableCents: jar.availableCents, monthSpentCents: 0, monthCommittedCents: 0 });
-    if (dec.mode === "auto") {
-      await d.tx((q) => move(q, acct.jar(userId), to, cents, { kind: opts.ledgerKind, userId, planId: opts.planId ?? null, reason: `${opts.reason} (Treat Jar, within your free hand)` }));
-      return { done: true, source: "jar", paypalId: null };
-    }
+  // They tapped Pay, so the jar pays whatever the amount. The free hand only limits what the kitten does alone (payFromJar).
+  const { availableCents } = await jarBalances(d, userId);
+  if (availableCents >= cents) {
+    await d.tx((q) => move(q, acct.jar(userId), to, cents, { kind: opts.jarKind ?? opts.ledgerKind, userId, planId: opts.planId ?? null, reason: `${opts.reason} (Treat Jar)` }));
+    return { done: true, source: "jar", paypalId: null };
   }
   if (user.is_demo) {
-    const pay = await testCardPayment({ cents, customId: opts.customId.slice(0, 120) });
+    const pay = await testCardPayment({ cents, customId: opts.after.slice(0, 120) });
     await d.tx((q) => move(q, acct.world, to, cents, { kind: opts.ledgerKind, userId, planId: opts.planId ?? null, paypalId: pay.captureId, reason: opts.reason }));
     return { done: true, source: "paypal", paypalId: pay.captureId ?? null };
   }
-  const base = baseUrl();
-  const { approveUrl } = await createCheckout({
-    cents,
-    customId: opts.customId.slice(0, 120),
-    description: `Kitty: ${opts.reason}`.slice(0, 120),
-    returnUrl: `${base}/api/v1/return/pay`,
-    cancelUrl: `${base}/?cancelled=pay`,
-  });
-  return { done: false, source: "paypal", approveUrl };
+  return { done: false, next: await refillOrAsk(userId, cents - availableCents, availableCents, opts) };
 }
 
 /**

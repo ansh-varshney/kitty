@@ -2,10 +2,11 @@ import { z } from "zod";
 import { db, type Queryable } from "../db";
 import { logEvent } from "./events";
 import { getKitten } from "./users";
-import { calendar, windowOf } from "./month";
 import { prepareFacts } from "./whims";
+import { giveBack } from "./set-aside";
+
+const fmtUsd = (c: number) => `$${(c / 100).toFixed(2)}`;
 import { expectedShare, shareLadder, type CostModel } from "../referee/shares";
-import { acceptSuggestion as guard, clash, pickOption, type Option, type Voter } from "../referee/time";
 import { reasonLines } from "../kitten/ai";
 
 /** Plans and pots (PRD §B7 changing a plan, §B8, FR-PLAN-*, FR-NEG-5..8). */
@@ -33,6 +34,7 @@ export type PlanRow = {
   paw_up_round: number;
   pawup_until: string | null;
   version: number;
+  use_savings: boolean;
 };
 
 export async function getPlan(q: Queryable, id: string): Promise<PlanRow> {
@@ -58,29 +60,65 @@ export async function createPlanFromWhim(w: {
   price_cents: number | null;
   place: string | null;
   image_url: string | null;
+  up_to_cents?: number | null;
+  price_mode?: string | null;
+  pounce_rule?: string | null;
+  decide_by?: string | null;
+  booker_id?: string | null;
+  use_savings?: boolean;
 }): Promise<string> {
   const d = await db();
-  return d.tx(async (q) => {
+  const created = await d.tx(async (q) => {
     const flipped = await q.query(`update whims set status='plan' where id=$1 and status='floating' returning id`, [w.id]);
     if (!flipped.length) return "";
-    const decideBy = new Date(Date.now() + 48 * 3600_000);
-    if (w.starts_at) {
-      const dayBefore = new Date(new Date(w.starts_at).getTime() - 24 * 3600_000);
-      if (dayBefore < decideBy && dayBefore.getTime() > Date.now() + 3600_000) decideBy.setTime(dayBefore.getTime());
-    }
+    // The whim's deadline carries straight over: everyone has to be paid in by the time set when it was floated.
+    const decideBy = new Date(w.decide_by && new Date(w.decide_by).getTime() > Date.now() ? w.decide_by : Date.now() + 48 * 3600_000);
+    const priceMode = w.price_mode ?? (w.price_cents == null && w.up_to_cents != null ? "per_person" : "total");
     const [plan] = await q.query<{ id: string }>(
-      `insert into plans (whim_id, squad_id, host_id, booker_id, title, image_url, place, starts_at, ends_at, price_cents, need_at_least, decide_by)
-       values ($1,$2,$3,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id`,
-      [w.id, w.squad_id, w.owner_id, w.what, w.image_url, w.place, w.starts_at, w.ends_at, w.price_cents ?? 0, w.need_at_least, decideBy.toISOString()],
+      `insert into plans (whim_id, squad_id, host_id, booker_id, title, image_url, place, starts_at, ends_at, price_cents, price_mode, need_at_least, pounce_rule, decide_by, use_savings)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'host',$13,$14) returning id`,
+      [w.id, w.squad_id, w.owner_id, w.booker_id ?? w.owner_id, w.what, w.image_url, w.place, w.starts_at, w.ends_at, w.price_cents ?? w.up_to_cents ?? 0, priceMode, w.need_at_least, decideBy.toISOString(), Boolean(w.use_savings)],
     );
     const answers = await q.query<{ user_id: string; confirmed: string | null }>(
       `select a.user_id, a.confirmed from answers a join memberships m on m.squad_id=$2 and m.user_id=a.user_id and m.left_at is null where a.whim_id=$1`,
       [w.id, w.squad_id],
     );
-    await q.query(`insert into plan_members (plan_id, user_id, status) values ($1,$2,'thinking')`, [plan.id, w.owner_id]);
+    // The host is always in (owner, 9 Nov; FR-PLAN-8). Their money is set aside separately, and the Pounce waits for it.
+    await q.query(`insert into plan_members (plan_id, user_id, status, joined_at) values ($1,$2,'in',now())`, [plan.id, w.owner_id]);
+    // A yes on the whim is a yes to paying: their kitten chips in as soon as the plan exists. Everyone else can tag along.
     for (const a of answers) {
-      const status = a.confirmed === "yes" || a.confirmed === "maybe" ? "thinking" : a.confirmed === "no" ? "out" : "invited";
-      await q.query(`insert into plan_members (plan_id, user_id, status) values ($1,$2,$3) on conflict do nothing`, [plan.id, a.user_id, status]);
+      const status = a.confirmed === "yes" ? "in" : a.confirmed === "no" ? "out" : "invited";
+      await q.query(`insert into plan_members (plan_id, user_id, status, joined_at) values ($1,$2,$3,$4) on conflict do nothing`, [plan.id, a.user_id, status, status === "in" ? new Date().toISOString() : null]);
+    }
+    // Everyone in already set their share aside when they agreed (FR-JAR-8): it becomes their money in the plan,
+    // exactly their share. Anything over it (more people said yes than needed) goes straight back.
+    const ins = new Set([w.owner_id, ...answers.filter((a) => a.confirmed === "yes").map((a) => a.user_id)]);
+    const { sharesFor } = await import("./pounce");
+    const shares = await sharesFor(q, plan.id);
+    const holds = await q.query<{ user_id: string; jar_cents: number; savings_cents: number }>(`update whim_holds set status='used' where whim_id=$1 and status='held' returning user_id, jar_cents, savings_cents`, [w.id]);
+    for (const h of holds) {
+      if (!ins.has(h.user_id)) {
+        await giveBack(q, h.user_id, { jarCents: h.jar_cents, savingsCents: h.savings_cents }, w.squad_id, "you're not in this plan");
+        continue;
+      }
+      const share = shares[h.user_id] ?? 0;
+      const fromSavings = Math.min(h.savings_cents, share);
+      const fromJar = Math.min(h.jar_cents, share - fromSavings);
+      const back = { jarCents: h.jar_cents - fromJar, savingsCents: h.savings_cents - fromSavings };
+      if (fromJar > 0) await q.query(`insert into paws (plan_id, user_id, kind, source, cents, status) values ($1,$2,'initial','jar',$3,'held')`, [plan.id, h.user_id, fromJar]);
+      if (fromSavings > 0) await q.query(`insert into paws (plan_id, user_id, kind, source, cents, status) values ($1,$2,'initial','savings',$3,'held')`, [plan.id, h.user_id, fromSavings]);
+      await giveBack(q, h.user_id, back, w.squad_id, "your share came down");
+      const extra = back.jarCents + back.savingsCents;
+      await logEvent(q, {
+        userId: h.user_id,
+        squadId: w.squad_id,
+        actor: "kitten",
+        type: "paw.placed",
+        objectType: "plan",
+        objectId: plan.id,
+        payload: { cents: fromJar + fromSavings, text: `"${w.what}" is happening. Your ${fmtUsd(fromJar + fromSavings)} share is in, from what you set aside.${extra > 0 ? ` ${fmtUsd(extra)} went back to your Treat Jar, since more people said yes.` : ""}` },
+        reason: "enough friends said yes",
+      });
     }
     const [owner] = await q.query<{ name: string }>(`select name from users where id=$1`, [w.owner_id]);
     await logEvent(q, {
@@ -98,11 +136,16 @@ export async function createPlanFromWhim(w: {
       type: "plan.created",
       objectType: "plan",
       objectId: plan.id,
-      payload: { title: w.what, priceSet: (w.price_cents ?? 0) > 0 },
+      payload: { title: w.what, priceSet: (w.price_cents ?? w.up_to_cents ?? 0) > 0 },
       reason: "enough friends said yes",
     });
     return plan.id;
   });
+  if (created) {
+    const { syncShares } = await import("./pounce");
+    await syncShares(created).catch((e) => console.error(`[plans] collecting shares: ${(e as Error).message}`));
+  }
+  return created;
 }
 
 /**
@@ -112,12 +155,14 @@ export async function createPlanFromWhim(w: {
 export async function planView(planId: string, viewerId: string) {
   const d = await db();
   const p = await getPlan(d, planId);
-  const members = await d.query<{ user_id: string; name: string; kitten_name: string | null; status: string }>(
-    `select m.user_id, u.name, k.name as kitten_name, m.status from plan_members m join users u on u.id=m.user_id
+  const members = await d.query<{ user_id: string; name: string; kitten_name: string | null; kitten_look: Record<string, unknown> | null; status: string }>(
+    `select m.user_id, u.name, k.name as kitten_name, k.look as kitten_look, m.status from plan_members m join users u on u.id=m.user_id
      left join kittens k on k.user_id=m.user_id where m.plan_id=$1 order by m.joined_at nulls last, u.name`,
     [planId],
   );
   const viewer = members.find((m) => m.user_id === viewerId);
+  const [place] = await d.query<{ kind: string }>(`select kind from squads where id=$1`, [p.squad_id]);
+  const withFriend = place?.kind === "direct" ? (members.find((m) => m.user_id !== viewerId)?.user_id ?? null) : null;
   if (!viewer) {
     const inSquad = await d.query(`select 1 from memberships where squad_id=$1 and user_id=$2 and left_at is null`, [p.squad_id, viewerId]);
     if (!inSquad.length) throw new Error("You can't see this plan.");
@@ -127,13 +172,13 @@ export async function planView(planId: string, viewerId: string) {
     [planId],
   );
   const invited = members.filter((m) => m.status !== "out").length;
-  const inCount = members.filter((m) => m.status === "in").length;
+  const inCount = members.filter((m) => m.status === "in").length; // includes the host, who is always in (FR-PLAN-8)
   const target = p.price_mode === "total" ? p.price_cents : p.price_cents * Math.max(inCount, 1);
   const mine = viewer
     ? {
         status: viewer.status,
-        ...(await d.query<{ limit_cents: number | null; pawup_need_cents: number | null; overrun_due_cents: number; use_savings: boolean }>(
-          `select limit_cents, pawup_need_cents, overrun_due_cents, use_savings from plan_members where plan_id=$1 and user_id=$2`,
+        ...(await d.query<{ limit_cents: number | null; pawup_need_cents: number | null; overrun_due_cents: number; overrun_paid: boolean; use_savings: boolean }>(
+          `select limit_cents, pawup_need_cents, overrun_due_cents, overrun_paid, use_savings from plan_members where plan_id=$1 and user_id=$2`,
           [planId, viewerId],
         ))[0],
         paws: await d.query(`select id, kind, source, cents, status, approve_url, cover_for from paws where plan_id=$1 and user_id=$2 order by created_at`, [planId, viewerId]),
@@ -144,6 +189,11 @@ export async function planView(planId: string, viewerId: string) {
     [planId],
   );
   const [pounce] = await d.query<{ total_cents: number; group_ids: string[]; shares: Record<string, number> }>(`select total_cents, group_ids, shares from pounces where plan_id=$1 order by created_at desc limit 1`, [planId]);
+  const { moneyState, tagView } = await import("./pounce");
+  const cash = await moneyState(d, p);
+  const tag = await tagView(d, p, viewerId);
+  const { bookingState } = await import("./jar");
+  const booking = await bookingState(d, planId);
   const sizes = Array.from(new Set([p.need_at_least, Math.max(inCount, p.need_at_least), invited])).filter((n) => n > 0).sort((a, b) => a - b);
 
   // What the viewer should expect to pay (owner request): split across max(need at least, people in incl. them).
@@ -177,7 +227,13 @@ export async function planView(planId: string, viewerId: string) {
             : `${e.splitWays} people would be in`;
     share = { ...e, text: `Your share${viewerIn ? "" : " if you join"}: ${money(e.cents)} (${why})` };
   }
+  // The squad sees "receipt pending" once the booker has been reminded (§B10), never who.
+  const receiptChased =
+    p.status === "pounced"
+      ? await d.query(`select 1 from reminders r where r.kind='receipt' and r.object_id=$1 and not exists (select 1 from receipts x where x.plan_id=$1 and x.status='confirmed') limit 1`, [planId])
+      : [];
   return {
+    receiptPending: receiptChased.length > 0,
     plan: {
       id: p.id,
       title: p.title,
@@ -196,15 +252,24 @@ export async function planView(planId: string, viewerId: string) {
       bookerId: p.booker_id,
       hostId: p.host_id,
       squadId: p.squad_id,
+      withFriend,
       version: p.version,
+      whimId: p.whim_id,
+      useSavings: p.use_savings,
+      bookerName: members.find((m) => m.user_id === p.booker_id)?.name ?? null,
     },
-    members: members.map((m) => ({ id: m.user_id, name: m.name, kittenName: m.kitten_name, status: m.status })),
-    pot: { inCount, invited, filledPct: target > 0 ? Math.min(100, Math.round((Number(held.c ?? 0) / target) * 100)) : 0 },
+    members: members.map((m) => ({ id: m.user_id, name: m.name, kittenName: m.kitten_name, look: m.kitten_look, status: m.status })),
+    pot: { inCount, invited, filledPct: target > 0 ? Math.min(100, Math.round((Number(held.c ?? 0) / target) * 100)) : 0, collectedCents: cash.collectedCents, targetCents: cash.targetCents, allPaid: cash.allPaid },
+    canPounce: p.status === "open" && inCount >= p.need_at_least && cash.allPaid,
+    myShareCents: cash.shares[viewerId] ?? null,
+    myHeldCents: cash.held[viewerId] ?? 0,
     ladder: p.price_cents > 0 ? shareLadder(costOf(p), sizes) : [],
     share,
     mine,
     suggestions: suggestions.map((s) => ({ id: s.id, round: s.round, status: s.status, candidate: s.candidate })),
     pounced: pounce ? { groupSize: pounce.group_ids.length, totalCents: pounce.total_cents } : null,
+    tag,
+    booking,
   };
 }
 
@@ -212,6 +277,7 @@ export async function respond(userId: string, planId: string, status: "thinking"
   const d = await db();
   const p = await getPlan(d, planId);
   if (p.status !== "open") throw new Error("This plan isn't open any more.");
+  if (p.host_id === userId) throw new Error("You're the host, so you're in. To call it off, cancel the plan.");
   const inSquad = await d.query(`select 1 from memberships where squad_id=$1 and user_id=$2 and left_at is null`, [p.squad_id, userId]);
   if (!inSquad.length) throw new Error("You're not in this plan's group.");
   await d.tx(async (q) => {
@@ -232,10 +298,13 @@ export async function respond(userId: string, planId: string, status: "thinking"
     });
   });
   if (status === "out") {
-    const { releaseMember } = await import("./pounce");
+    const { releaseMember, syncShares } = await import("./pounce");
     await releaseMember(planId, userId, "said not this time");
+    await syncShares(planId);
   }
 }
+
+const FIELD_WORDS: Record<string, string> = { title: "the name", place: "the place", startsAt: "the time", endsAt: "the end time", priceCents: "the price", priceMode: "how the price works", splitMode: "the split", needAtLeast: "how many people it needs", pounceRule: "when it Pounces", decideBy: "the deadline", refundUntil: "the refund date", bookerId: "who's booking" };
 
 const Changes = z
   .object({
@@ -269,21 +338,13 @@ const COLS: Record<string, string> = {
   bookerId: "booker_id",
 };
 
-/** Host edits apply directly; members' edits become suggestions the host accepts (FR-NEG-8, FR-WHIM-7). */
-export async function editPlan(userId: string, planId: string, raw: unknown): Promise<{ applied: boolean; suggestionId?: string; rechecked: number }> {
+/** Only a host re-opening a plan that went on ice edits one: a plan doesn't change once it's made (FR-PLAN-9). */
+export async function editPlan(userId: string, planId: string, raw: unknown): Promise<{ applied: boolean; rechecked: number }> {
   const changes = Changes.parse(raw);
   const d = await db();
   const p = await getPlan(d, planId);
   if (!["open", "on_ice"].includes(p.status)) throw new Error("This plan can't be changed now.");
-  if (userId !== p.host_id) {
-    const [s] = await d.query<{ id: string }>(`insert into suggestions (plan_id, from_user, round, candidate) values ($1,$2,0,$3) returning id`, [
-      planId,
-      userId,
-      JSON.stringify(changes),
-    ]);
-    await logEvent(d, { userId: p.host_id, squadId: p.squad_id, actor: "kitten", type: "plan.suggestion", objectType: "plan", objectId: planId, payload: { suggestionId: s.id, changes }, reason: "a friend suggested a change" });
-    return { applied: false, suggestionId: s.id, rechecked: 0 };
-  }
+  if (userId !== p.host_id) throw new Error("Only the host can do that.");
   const keys = Object.keys(changes).filter((k) => COLS[k]);
   if (!keys.length) return { applied: true, rechecked: 0 };
   await checkEdit(p, changes);
@@ -295,7 +356,12 @@ export async function editPlan(userId: string, planId: string, raw: unknown): Pr
   ]);
   if (!updated.length) throw new Error("This plan can't be changed now.");
   const rechecked = await recheckAffected(planId, keys);
-  await logEvent(d, { squadId: p.squad_id, actor: "user", actorId: userId, type: "plan.edited", objectType: "plan", objectId: planId, public: { text: `The plan changed: ${keys.join(", ")}`, fields: keys } });
+  if (p.status === "on_ice") {
+    // Re-opened: the kittens collect everyone's share again.
+    const { syncShares } = await import("./pounce");
+    await syncShares(planId);
+  }
+  await logEvent(d, { squadId: p.squad_id, actor: "user", actorId: userId, type: "plan.edited", objectType: "plan", objectId: planId, public: { text: `The plan changed: ${keys.map((k) => FIELD_WORDS[k] ?? k).join(", ")}.`, fields: keys } });
   return { applied: true, rechecked };
 }
 
@@ -344,140 +410,4 @@ async function recheckAffected(planId: string, keys: string[]): Promise<number> 
     await logEvent(d, { userId: c.id, squadId: p.squad_id, actor: "kitten", type: "plan.rechecked", objectType: "plan", objectId: planId, payload: { answer: c.answer, reason: lines[c.id] }, reason: "the plan changed" });
   }
   return members.length;
-}
-
-export async function acceptSuggestion(hostId: string, suggestionId: string) {
-  const d = await db();
-  const [s] = await d.query<{ plan_id: string; candidate: Record<string, unknown>; status: string }>(`select plan_id, candidate, status from suggestions where id=$1`, [suggestionId]);
-  if (!s) throw new Error("Suggestion not found");
-  if (s.status !== "open") throw new Error(s.status === "chosen" ? "That suggestion was already applied." : "That suggestion is closed.");
-  const plan = await getPlan(d, s.plan_id);
-  if (plan.host_id !== hostId) throw new Error("Only the host can accept suggestions.");
-  const res = await editPlan(hostId, s.plan_id, s.candidate);
-  if (!res.applied) throw new Error("Only the host can accept suggestions.");
-  await d.query(`update suggestions set status='chosen' where id=$1`, [suggestionId]);
-  return res;
-}
-
-/**
- * Kittens look for a version that fits everyone interested (PRD §B7 rounds, FR-NEG-5/6/7):
- * each kitten may suggest one alternative per round; the referee scores; it always stops after 2 rounds.
- */
-export async function negotiate(planId: string) {
-  const d = await db();
-  const p = await getPlan(d, planId);
-  const base = windowOf(p.starts_at, p.ends_at);
-  if (!base) return { rounds: 0, fitsAll: true, note: "no date to negotiate yet" };
-  const members = await d.query<{ user_id: string; limit_cents: number | null }>(
-    `select user_id, limit_cents from plan_members where plan_id=$1 and status in ('thinking','in')`,
-    [planId],
-  );
-  const voters: Voter[] = [];
-  for (const m of members) {
-    const cal = await calendar(d, m.user_id, planId);
-    voters.push({ id: m.user_id, limitCents: null, plansIn: cal.plansIn, busy: cal.busy });
-  }
-  const len = base.end.getTime() - base.start.getTime();
-  const keyOf = (s: Date) => s.toISOString();
-  const options: Option[] = [{ key: keyOf(base.start), window: base, perPersonCents: null }];
-  const seen = [keyOf(base.start)];
-  let best = pickOption(options, voters).best!;
-  let rounds = 0;
-  for (let round = 1; round <= 2; round++) {
-    if (best.fits.length === voters.length) break;
-    rounds = round;
-    const suggestedBy: string[] = [];
-    const current = options.find((o) => o.key === best.key)!;
-    for (const v of voters.filter((x) => !best.fits.includes(x.id))) {
-      for (let wk = 1; wk <= 6; wk++) {
-        const start = new Date(current.window!.start.getTime() + wk * 7 * 86400_000);
-        const w = { start, end: new Date(start.getTime() + len) };
-        const ok = guard({ round, fromUser: v.id, key: keyOf(start), alreadyThisRound: suggestedBy, seenKeys: seen });
-        if (!ok.ok) continue;
-        if (clash(w, v.plansIn, []).hard) continue;
-        options.push({ key: keyOf(start), window: w, perPersonCents: null });
-        seen.push(keyOf(start));
-        suggestedBy.push(v.id);
-        await d.query(`insert into suggestions (plan_id, from_user, round, candidate) values ($1,$2,$3,$4)`, [
-          planId,
-          v.id,
-          round,
-          JSON.stringify({ startsAt: w.start.toISOString(), endsAt: w.end.toISOString() }),
-        ]);
-        break;
-      }
-    }
-    best = pickOption(options, voters).best!;
-  }
-  const fitsAll = best.fits.length === voters.length;
-  const chosen = options.find((o) => o.key === best.key)!;
-  const changed = best.key !== keyOf(base.start);
-  if (changed) {
-    const [s] = await d.query<{ id: string }>(`insert into suggestions (plan_id, from_user, round, candidate, status) values ($1,null,$2,$3,'open') returning id`, [
-      planId,
-      rounds,
-      JSON.stringify({ startsAt: chosen.window!.start.toISOString(), endsAt: chosen.window!.end.toISOString() }),
-    ]);
-    await logEvent(d, {
-      userId: p.host_id,
-      squadId: p.squad_id,
-      actor: "kitten",
-      type: "plan.negotiated",
-      objectType: "plan",
-      objectId: planId,
-      payload: { suggestionId: s.id, startsAt: chosen.window!.start, fits: best.fits.length, of: voters.length, text: `${chosen.window!.start.toDateString()} fits ${best.fits.length} of ${voters.length}. Apply it?` },
-      reason: "kittens looked for a date that fits everyone",
-    });
-  }
-  for (const v of voters.filter((x) => !best.fits.includes(x.id))) {
-    await logEvent(d, {
-      userId: v.id,
-      squadId: p.squad_id,
-      actor: "kitten",
-      type: "plan.no_fit",
-      objectType: "plan",
-      objectId: planId,
-      payload: { text: `We couldn't find a date that works for you. Best option fits ${best.fits.length} of ${voters.length}. Change something, or skip?` },
-      reason: "negotiation stopped after 2 rounds",
-    });
-  }
-  return { rounds, fitsAll, fits: best.fits.length, of: voters.length, chosenStartsAt: chosen.window?.start.toISOString() ?? null, changed };
-}
-
-/**
- * The host sets how the cost is split (FR-PLAN-3): equal, custom amounts ("Priya pays $200, the rest split") or
- * weights (a couple counts as 2). Each person still only ever sees their own share.
- */
-export async function setSplit(
-  hostId: string,
-  planId: string,
-  input: { splitMode: "equal" | "custom" | "weights"; members?: { userId: string; customCents?: number | null; weight?: number }[] },
-) {
-  const d = await db();
-  const p = await getPlan(d, planId);
-  if (p.host_id !== hostId) throw new Error("Only the host changes the split.");
-  if (p.status !== "open") throw new Error("The split can't change after the Pounce.");
-  const members = input.members ?? [];
-  for (const m of members) {
-    const ok = await d.query(`select 1 from memberships where squad_id=$1 and user_id=$2 and left_at is null`, [p.squad_id, m.userId]);
-    if (!ok.length) throw new Error("That person isn't in this plan's group.");
-    if (m.weight != null && (!Number.isInteger(m.weight) || m.weight < 1 || m.weight > 10)) throw new Error("Weights are whole numbers from 1 to 10.");
-    if (m.customCents != null && (!Number.isInteger(m.customCents) || m.customCents < 0)) throw new Error("Pick an amount.");
-  }
-  await d.tx(async (q) => {
-    await q.query(`update plans set split_mode=$2 where id=$1`, [planId, input.splitMode]);
-    for (const m of members) {
-      await q.query(
-        `insert into plan_members (plan_id, user_id, status, weight, custom_cents) values ($1,$2,'invited',coalesce($3,1),$4)
-         on conflict (plan_id, user_id) do update set weight=coalesce($3, plan_members.weight), custom_cents=$4`,
-        [planId, m.userId, m.weight ?? null, input.splitMode === "custom" ? (m.customCents ?? null) : null],
-      );
-    }
-    if (input.splitMode === "custom" && p.price_mode === "total") {
-      const [{ c }] = await q.query<{ c: string }>(`select coalesce(sum(custom_cents),0) as c from plan_members where plan_id=$1 and status <> 'out'`, [planId]);
-      if (Number(c) > p.price_cents) throw new Error("The custom amounts add up to more than the price.");
-    }
-    await logEvent(q, { squadId: p.squad_id, actor: "user", actorId: hostId, type: "plan.split", objectType: "plan", objectId: planId, public: { text: `The host changed how ${p.title} is split (${input.splitMode}).` } });
-  });
-  return { ok: true, splitMode: input.splitMode };
 }

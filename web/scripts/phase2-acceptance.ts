@@ -86,20 +86,21 @@ async function main() {
 
   await at("AT-24", "Kitty Party: different amounts, savings pay only their owner's share, jar = sum of members", async () => {
     const p = await party.createParty(U.ava, crew, { name: "Goa fund", goalCents: 50000 });
+    // Savings come from the Treat Jar (FR-PARTY-7): give each saver enough for two cycles, on top of what later tests use.
+    const { acct, move } = await import("../lib/core/ledger");
+    for (const [k, c] of [["ava", 4000], ["jordan", 3000], ["zoe", 2000]] as const) await move(d, acct.world, acct.jar(U[k]), c, { kind: "jar_topup", userId: U[k], reason: "test: money for two savings" });
     for (const [k, c] of [["ava", 2000], ["jordan", 1500], ["zoe", 1000]] as const) await party.joinParty(U[k], crew, c);
     for (const k of ["ava", "jordan", "zoe"]) await party.collectContribution(p.partyId, U[k]); // a second cycle
     const b1 = await party.memberBalances(d, crew);
     const jar1 = await party.jarTotal(d, crew);
     expect(b1[U.ava] === 4000 && b1[U.jordan] === 3000 && b1[U.zoe] === 2000 && jar1 === 9000, `balances ${JSON.stringify(b1)} jar ${jar1}`);
     // A $100 plan for Ava and Jordan: each $50 share uses their OWN savings first.
-    const wh = await whims.createWhim(U.ava, { squadId: crew, what: "Beach day", startsAt: "2027-02-06T18:00:00Z", endsAt: "2027-02-06T22:00:00Z", priceCents: 10000, needAtLeast: 2 });
+    const wh = await whims.createWhim(U.ava, { squadId: crew, what: "Beach day", place: "The beach", startsAt: "2027-02-06T18:00:00Z", endsAt: "2027-02-06T22:00:00Z", priceCents: 10000, needAtLeast: 2, useSavings: true });
     const ans = (await whims.pendingAnswers(U.jordan)).filter((a) => a.whim_id === wh.whimId);
     const { plansCreated } = await whims.confirmAnswers(U.jordan, ans.map((a) => ({ answerId: a.id, answer: "yes" as const })));
     const planId = plansCreated[0];
-    await plans.editPlan(U.ava, planId, { pounceRule: "host", needAtLeast: 2 });
-    const pa = await pounce.pawIn(U.ava, planId, { limitCents: 5000, confirmOverBudget: true });
-    const pj = await pounce.pawIn(U.jordan, planId, { limitCents: 5000, confirmOverBudget: true });
-    expect(pa.ok && pj.ok && pa.savingsCents === 4000 && pj.savingsCents === 3000, `paw-ins ${JSON.stringify([pa, pj])}`);
+    const paid = await d.query<{ user_id: string; c: number }>(`select user_id, sum(cents)::int as c from paws where plan_id=$1 and source='savings' and status='held' group by user_id`, [planId]);
+    expect(paid.find((x) => x.user_id === U.ava)?.c === 4000 && paid.find((x) => x.user_id === U.jordan)?.c === 3000, `savings used ${JSON.stringify(paid)}`);
     const pc = (await pounce.tryPounce(planId, { hostTapped: true })) as { status: string };
     expect(pc.status === "pounced", `pounce ${JSON.stringify(pc)}`);
     const b2 = await party.memberBalances(d, crew);
@@ -171,21 +172,21 @@ async function main() {
     return `radar invited 5 friends privately; Ava + Zoe joined (budget $50), Tyler's skip invisible; ${ideas.length} idea(s) from ${ideas[0].source}; gift plan made; Judge saw nothing; deleted after the birthday`;
   });
 
-  await at("BOWL", "The Bowl: shares → one Payout to the account holder; a seat leaves → reshare; a miss → Yarn strand", async () => {
+  await at("BOWL", "The Bowl: each share moves from the Treat Jar on its day to the account holder's jar; a seat leaves → reshare", async () => {
     const b = await bowl.createBowl(U.tyler, { squadId: crew, service: "Spotify Family", totalCents: 1699, seats: 3, memberIds: [U.ava, U.zoe] });
     bowlId = b.bowlId;
+    const before = await balance(d, acct.jar(U.tyler));
     await bowl.joinBowl(U.ava, b.bowlId);
     await bowl.joinBowl(U.zoe, b.bowlId);
-    const c1 = await bowl.bowlCycle(b.bowlId);
-    expect(c1.collectedCents === 1132 && c1.missed === 0 && !!c1.payoutBatchId, JSON.stringify(c1));
+    const got = (await balance(d, acct.jar(U.tyler))) - before;
+    expect(got === 1132, `the account holder got ${got}`);
     const l = await bowl.leaveBowl(U.zoe, b.bowlId);
-    const c2 = await bowl.bowlCycle(b.bowlId); // Ava hasn't confirmed her new share yet → missed → Yarn strand
-    const strand = await d.query(`select 1 from yarn_cards where note like 'Spotify Family share (missed)'`);
-    expect(l.newShares[U.ava] === 849 && c2.missed === 1 && strand.length === 1, `reshare ${JSON.stringify(l)} cycle ${JSON.stringify(c2)}`);
+    const c2 = await bowl.bowlCycle(b.bowlId); // Ava hasn't confirmed her new share yet, so nothing moves
+    expect(l.newShares[U.ava] === 849 && c2.collectedCents === 0, `reshare ${JSON.stringify(l)} cycle ${JSON.stringify(c2)}`);
     await bowl.joinBowl(U.ava, b.bowlId);
     const c3 = await bowl.bowlCycle(b.bowlId);
     expect(c3.collectedCents === 849 && (await balance(d, acct.bowl(b.bowlId))) === 0, JSON.stringify(c3));
-    return `shares $5.66 × 2 → Payout ${c1.payoutBatchId} to Tyler; Zoe left → Ava's share $8.49 (confirm first); unconfirmed cycle → a Yarn strand; confirmed → collected`;
+    return "shares $5.66 × 2 into Tyler's Treat Jar; Zoe left → Ava's share $8.49 (confirm first); confirmed → collected";
   });
 
   await at("MEOWS", "Meows sections, one-tap actions, and alerts that respect quiet hours", async () => {

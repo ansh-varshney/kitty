@@ -4,9 +4,10 @@ import { loginUrl } from "../paypal/login";
 import { baseUrl } from "../env";
 import { db } from "../db";
 import { OAUTH_COOKIE, requestUserId, sessionCookieHeader, SESSION_COOKIE } from "../session";
-import { devAllowed } from "../dev-auth";
+import { devAllowed, localLoginAllowed, localPeople } from "../dev-auth";
 import * as users from "../core/users";
 import * as whims from "../core/whims";
+import * as negotiation from "../core/negotiate";
 import * as plans from "../core/plans";
 import * as pounce from "../core/pounce";
 import * as receipts from "../core/receipts";
@@ -15,7 +16,7 @@ import { calendar, committedCents, jarBalances, monthSpentCents, savingsBalance 
 import { diary, logEvent, squadFeed } from "../core/events";
 import { runTick } from "../core/tick";
 import { DEMO_FRIENDS, seedDemoWorld, seedSavings } from "../core/seed";
-import { kittenChat, askFriendKitten, answerOwnerAsk } from "../kitten/chat";
+import { kittenChat, askFriendKitten, answerOwnerAsk, chatHistory, kittenUnread, markKittenRead, markCardsRead, dismissKittenCard } from "../kitten/chat";
 import { funBudgetCents } from "../referee/rules";
 import { validTz } from "../referee/time";
 import * as yarn from "../core/yarn";
@@ -29,8 +30,12 @@ import * as exportMod from "../core/export";
 import { myMonth } from "../core/mymonth";
 import { runJobs } from "../core/jobs";
 import { leaveSquad } from "../core/leave";
+import { nudgeRow, settleUp, untangleEverything, untangleWith } from "../core/settle-up";
 import { move as moveLedger } from "../core/ledger";
 import { captureCheckout } from "../paypal/holds";
+import { parseWhim } from "../kitten/ai";
+import * as friends from "../core/friends";
+import { remindNow } from "../core/reminders";
 
 /**
  * The Kitty API, /api/v1/... (PRD §D8 Phase 1). One table of routes; every handler gets the acting user.
@@ -138,8 +143,14 @@ on("POST", "jar/withdraw", "user", async (c) => jar.withdraw(me(c), parse(z.obje
 // ---------------------------------------------------------------- squads
 
 on("GET", "squads", "user", async (c) => users.mySquads(await db(), me(c)));
-on("POST", "squads", "user", async (c) => users.createSquad(await db(), me(c), parse(z.object({ name: z.string().min(1).max(40) }), c.body).name));
-on("POST", "squads/join", "user", async (c) => users.joinSquad(await db(), me(c), parse(z.object({ code: z.string().min(3).max(40) }), c.body).code));
+on("POST", "squads", "user", async (c) => {
+  const name = parse(z.object({ name: z.string().trim().min(1).max(40) }), c.body).name;
+  const d = await db();
+  // An invite code typed into the name box means "join that squad", not "start a squad called QJh6mFw".
+  if ((await d.query(`select 1 from squads where invite_code=$1 and archived_at is null`, [users.inviteCodeIn(name)])).length) return users.joinSquad(d, me(c), name);
+  return users.createSquad(d, me(c), name);
+});
+on("POST", "squads/join", "user", async (c) => users.joinSquad(await db(), me(c), parse(z.object({ code: z.string().trim().min(3).max(200) }), c.body).code));
 on("GET", "squads/:id", "user", async (c) => {
   await squadAccess(c.params[0], me(c));
   const d = await db();
@@ -148,7 +159,7 @@ on("GET", "squads/:id", "user", async (c) => {
 });
 on("GET", "squads/:id/feed", "user", async (c) => {
   await squadAccess(c.params[0], me(c));
-  return squadFeed(await db(), c.params[0], Number(c.url.searchParams.get("after") ?? 0) || 0, 100);
+  return squadFeed(await db(), c.params[0], Number(c.url.searchParams.get("after") ?? 0) || 0, 100, me(c));
 });
 on("POST", "squads/:id/leave", "user", async (c) => {
   await squadAccess(c.params[0], me(c));
@@ -169,6 +180,13 @@ on("POST", "squads/:id/settings", "user", async (c) => {
 
 // ---------------------------------------------------------------- whims and answers
 
+// Read a whim without sending it, so the owner can check it first (F9 "Is this right?").
+on("POST", "whims/parse", "user", async (c) => {
+  const b = parse(z.object({ text: z.string().max(2000).optional(), url: z.string().url().max(500).optional(), imageBase64: z.string().max(8_000_000).optional(), mimeType: z.enum(["image/png", "image/jpeg", "image/webp"]).optional() }), c.body);
+  const [u] = await (await db()).query<{ tz: string }>(`select tz from users where id=$1`, [me(c)]);
+  return parseWhim({ ...b, tz: u?.tz });
+});
+
 const WhimBody = z.object({
   squadId: uuid.optional(),
   friendIds: z.array(uuid).max(12).optional(),
@@ -183,21 +201,35 @@ const WhimBody = z.object({
   upToCents: cents.optional(),
   priceCents: cents.optional(),
   needAtLeast: z.number().int().min(2).max(50).optional(),
+  place: z.string().max(120).optional(),
+  priceMode: z.enum(["total", "per_person"]).optional(),
+  useSavings: z.boolean().optional(),
+  decideBy: z.string().datetime().optional(),
+  bookerId: uuid.optional(),
+  imageUrl: z.string().url().max(2000).optional(),
+  sourceUrl: z.string().url().max(2000).optional(),
 });
-on("POST", "whims", "user", async (c) => whims.createWhim(me(c), parse(WhimBody, c.body)));
+on("POST", "whims", "user", async (c) => whims.floatWhim(me(c), parse(WhimBody.extend({ refill: z.boolean().optional() }), c.body)));
 on("POST", "whims/:id/withdraw", "user", async (c) => whims.withdrawWhim(me(c), c.params[0]));
 on("GET", "answers", "user", async (c) => whims.pendingAnswers(me(c)));
 on("POST", "answers/confirm", "user", async (c) => {
-  const b = parse(z.object({ items: z.array(z.object({ answerId: uuid, answer: z.enum(["yes", "maybe", "no"]).optional() })).min(1).max(50) }), c.body);
-  return whims.confirmAnswers(me(c), b.items);
+  const b = parse(z.object({ items: z.array(z.object({ answerId: uuid, answer: z.enum(["yes", "no"]).optional() })).min(1).max(50), refill: z.boolean().optional() }), c.body);
+  return whims.answerWhims(me(c), b.items, b.refill);
 });
+
+// ---- The whim is where things get decided (FR-WHIM-10, FR-NEG-9)
+on("GET", "whims/:id", "user", async (c) => negotiation.whimView(me(c), c.params[0]));
+on("GET", "squads/:id/whims", "user", async (c) => negotiation.squadWhims(me(c), c.params[0]));
+on("POST", "whims/:id/negotiate", "user", async (c) => negotiation.askToNegotiate(me(c), c.params[0], parse(z.object({ wish: z.string().max(300).optional() }), c.body).wish));
+on("POST", "negotiations/:id/accept", "user", async (c) => negotiation.answerNegotiation(me(c), c.params[0], true));
+on("POST", "negotiations/:id/keep", "user", async (c) => negotiation.answerNegotiation(me(c), c.params[0], false));
 
 // ---------------------------------------------------------------- plans
 
 on("GET", "plans", "user", async (c) => {
   const d = await db();
   return d.query(
-    `select p.id, p.title, p.status, p.starts_at, p.ends_at, p.decide_by, p.price_cents, s.name as squad_name, m.status as my_status
+    `select p.id, p.title, p.status, p.starts_at, p.ends_at, p.decide_by, p.price_cents, p.squad_id, s.name as squad_name, m.status as my_status
      from plans p join squads s on s.id=p.squad_id
      join memberships ms on ms.squad_id=p.squad_id and ms.user_id=$1
      left join plan_members m on m.plan_id=p.id and m.user_id=$1
@@ -209,21 +241,12 @@ on("GET", "plans/:id", "user", async (c) => {
   await planAccess(c.params[0], me(c));
   return plans.planView(c.params[0], me(c));
 });
+// A plan doesn't change once it's made (FR-PLAN-9). The one exception: the host gives a plan on ice a new deadline.
 on("POST", "plans/:id/edit", "user", async (c) => {
   await planAccess(c.params[0], me(c));
-  return plans.editPlan(me(c), c.params[0], c.body);
-});
-on("POST", "plans/:id/split", "user", async (c) => {
-  const p = await planAccess(c.params[0], me(c));
-  if (p.host_id !== me(c)) throw new HttpError(403, "Only the host changes the split.");
-  const b = parse(
-    z.object({
-      splitMode: z.enum(["equal", "custom", "weights"]),
-      members: z.array(z.object({ userId: uuid, customCents: z.number().int().min(0).max(5_000_000).nullable().optional(), weight: z.number().int().min(1).max(10).optional() })).max(50).optional(),
-    }),
-    c.body,
-  );
-  return plans.setSplit(me(c), c.params[0], b);
+  const p = await plans.getPlan(await db(), c.params[0]);
+  if (p.status !== "on_ice" || p.host_id !== me(c)) throw new HttpError(400, "A plan doesn't change once it's made. To change something, cancel it and float a new whim.");
+  return plans.editPlan(me(c), c.params[0], parse(z.object({ decideBy: z.string().datetime() }), c.body));
 });
 on("POST", "plans/:id/respond", "user", async (c) => {
   await planAccess(c.params[0], me(c));
@@ -231,16 +254,17 @@ on("POST", "plans/:id/respond", "user", async (c) => {
 });
 on("POST", "plans/:id/paw", "user", async (c) => {
   await planAccess(c.params[0], me(c));
-  const b = parse(z.object({ limitCents: cents, useSavings: z.boolean().optional(), confirmOverBudget: z.boolean().optional(), confirmBusy: z.boolean().optional() }), c.body);
+  const b = parse(z.object({ limitCents: cents, useSavings: z.boolean().optional(), confirmOverBudget: z.boolean().optional(), confirmBusy: z.boolean().optional(), changeLimit: z.boolean().optional(), refill: z.boolean().optional() }), c.body);
   return pounce.pawIn(me(c), c.params[0], b);
 });
 on("POST", "plans/:id/paw-up", "user", async (c) => {
   await planAccess(c.params[0], me(c));
-  return pounce.answerPawUp(me(c), c.params[0], parse(z.object({ accept: z.boolean() }), c.body).accept);
+  const b = parse(z.object({ accept: z.boolean(), refill: z.boolean().optional() }), c.body);
+  return pounce.answerPawUp(me(c), c.params[0], b.accept, b.refill);
 });
 on("POST", "plans/:id/cover", "user", async (c) => {
   await planAccess(c.params[0], me(c));
-  const b = parse(z.object({ toId: uuid, cents }), c.body);
+  const b = parse(z.object({ toId: uuid, cents, refill: z.boolean().optional() }), c.body);
   await planAccess(c.params[0], b.toId);
   return pounce.coverFriend(me(c), c.params[0], b.toId, b.cents);
 });
@@ -252,14 +276,9 @@ on("POST", "plans/:id/pounce", "user", async (c) => {
   const r = (await pounce.tryPounce(c.params[0], { hostTapped: true })) as { status: string; inCount?: number; invited?: number };
   if (r.status !== "waiting") return r;
   // Say WHY it didn't Pounce (owner test, 7 Nov: a quiet "waiting" looked like it had worked).
-  const [pl] = await (await db()).query<{ pounce_rule: string; need_at_least: number }>(`select pounce_rule, need_at_least from plans where id=$1`, [c.params[0]]);
+  const [pl] = await (await db()).query<{ need_at_least: number }>(`select need_at_least from plans where id=$1`, [c.params[0]]);
   const inNow = r.inCount ?? 0;
-  const why =
-    inNow < pl.need_at_least
-      ? `Not yet: it needs at least ${pl.need_at_least} people in, and ${inNow} are in.`
-      : pl.pounce_rule === "everyone"
-        ? `Not yet: this plan's rule is "Pounce when everyone is in", and ${inNow} of ${r.invited} invited are in. To go now, change the rule to "Pounce when I tap", Save, then tap Pounce again.`
-        : "Not yet.";
+  const why = inNow < pl.need_at_least ? `Not yet: it needs at least ${pl.need_at_least} people in, and ${inNow} are in.` : "Not yet.";
   return { ...r, pounced: false, why };
 });
 on("POST", "plans/:id/cancel", "user", async (c) => {
@@ -269,12 +288,22 @@ on("POST", "plans/:id/cancel", "user", async (c) => {
 });
 on("POST", "plans/:id/tag-along", "user", async (c) => {
   await planAccess(c.params[0], me(c));
-  return pounce.tagAlong(me(c), c.params[0], parse(z.object({ limitCents: cents }), c.body));
+  return pounce.tagAlong(me(c), c.params[0], parse(z.object({ refill: z.boolean().optional() }), c.body));
 });
-on("POST", "plans/:id/negotiate", "user", async (c) => {
-  const p = await planAccess(c.params[0], me(c));
-  if (p.host_id !== me(c)) throw new HttpError(403, "Only the host asks the kittens to look for a better time.");
-  return plans.negotiate(c.params[0]);
+on("POST", "tag-requests/:id/accept", "user", async (c) => pounce.answerTagRequest(me(c), c.params[0], true));
+on("POST", "tag-requests/:id/decline", "user", async (c) => pounce.answerTagRequest(me(c), c.params[0], false));
+on("POST", "tag-requests/:id/pay", "user", async (c) => pounce.payTagRequest(me(c), c.params[0], parse(z.object({ refill: z.boolean().optional() }), c.body).refill));
+on("POST", "plans/:id/chip-in", "user", async (c) => {
+  await planAccess(c.params[0], me(c));
+  return pounce.chipIn(me(c), c.params[0], parse(z.object({ refill: z.boolean().optional() }), c.body).refill);
+});
+on("POST", "plans/:id/pay-booking", "user", async (c) => {
+  await planAccess(c.params[0], me(c));
+  return jar.payBooking(me(c), c.params[0], parse(z.object({ email: z.string().email().max(200), cents }), c.body));
+});
+on("POST", "plans/:id/paid-elsewhere", "user", async (c) => {
+  await planAccess(c.params[0], me(c));
+  return jar.markPaidElsewhere(me(c), c.params[0]);
 });
 on("POST", "plans/:id/receipt", "user", async (c) => {
   await planAccess(c.params[0], me(c));
@@ -283,10 +312,12 @@ on("POST", "plans/:id/receipt", "user", async (c) => {
 });
 on("POST", "plans/:id/overrun/pay", "user", async (c) => {
   await planAccess(c.params[0], me(c));
-  return receipts.payOverrun(me(c), c.params[0]);
+  return receipts.payOverrun(me(c), c.params[0], parse(z.object({ refill: z.boolean().optional() }), c.body).refill);
 });
-on("POST", "receipts/:id/confirm", "user", async (c) => receipts.confirmReceipt(me(c), c.params[0], parse(z.object({ cents: z.number().int().min(0).max(1_000_000) }), c.body).cents));
-on("POST", "suggestions/:id/accept", "user", async (c) => plans.acceptSuggestion(me(c), c.params[0]));
+on("POST", "receipts/:id/confirm", "user", async (c) => {
+  const b = parse(z.object({ cents: z.number().int().min(0).max(1_000_000), refill: z.boolean().optional() }), c.body);
+  return receipts.confirmReceipt(me(c), c.params[0], b.cents, b.refill);
+});
 
 // ---------------------------------------------------------------- calendar, diary
 
@@ -308,6 +339,51 @@ on("GET", "diary", "user", async (c) => diary(await db(), me(c), 200));
 
 // ---------------------------------------------------------------- kitten
 
+on("GET", "friends", "user", async (c) => friends.friendsList(me(c)));
+on("GET", "friends/:id/thread", "user", async (c) => friends.thread(me(c), c.params[0]));
+on("POST", "friends/:id/messages", "user", async (c) => friends.sendToFriend(me(c), c.params[0], parse(z.object({ text: z.string().trim().min(1).max(500), mode: z.enum(["person", "ask_kitten", "my_kitten"]) }), c.body)));
+on("POST", "friends/:id/nudge", "user", async (c) => {
+  if (!(await users.sharesASquad(await db(), me(c), c.params[0]))) throw new HttpError(403, "You can only nudge friends in your squads.");
+  return remindNow(me(c), c.params[0]);
+});
+on("GET", "kitten/history", "user", async (c) => chatHistory(me(c)));
+on("GET", "kitten/unread", "user", async (c) => kittenUnread(me(c)));
+on("POST", "kitten/read", "user", async (c) => markKittenRead(me(c)));
+on("POST", "kitten/cards/read", "user", async (c) => markCardsRead(me(c)));
+on("POST", "kitten/cards/dismiss", "user", async (c) => dismissKittenCard(me(c), parse(z.object({ key: z.string().min(1).max(200) }), c.body).key));
+on("GET", "kitten/memory", "user", async (c) => ({ memory: await users.kittenMemory(await db(), me(c)) }));
+on("POST", "kitten/memory/forget", "user", async (c) => {
+  const b = parse(z.object({ index: z.number().int().min(0) }), c.body);
+  const d = await db();
+  const memory = await users.kittenMemory(d, me(c));
+  memory.splice(b.index, 1);
+  await users.setKittenMemory(d, me(c), memory);
+  return { memory };
+});
+on("POST", "me/kitten", "user", async (c) => {
+  await users.updateKitten(await db(), me(c), c.body);
+  return { ok: true };
+});
+on("POST", "me/profile", "user", async (c) => {
+  await users.updateProfile(await db(), me(c), c.body);
+  return { ok: true };
+});
+on("POST", "rules/share", "user", async (c) => {
+  await users.setSharing(await db(), me(c), c.body);
+  return { ok: true };
+});
+on("DELETE", "rules/:id", "user", async (c) => {
+  await users.deleteRule(await db(), me(c), c.params[0]);
+  return { ok: true };
+});
+on("POST", "squads/:id/messages", "user", async (c) => {
+  await squadAccess(c.params[0], me(c));
+  const text = parse(z.object({ text: z.string().trim().min(1).max(500) }), c.body).text;
+  const d = await db();
+  const u = await users.getUser(d, me(c));
+  await logEvent(d, { squadId: c.params[0], actor: "user", actorId: me(c), type: "chat.squad", public: { text, name: u?.name, userId: me(c) } });
+  return { ok: true };
+});
 on("POST", "kitten/chat", "user", async (c) => kittenChat(me(c), parse(z.object({ message: z.string().min(1).max(1000) }), c.body).message));
 on("POST", "kitten/ask", "user", async (c) => {
   const b = parse(z.object({ friendId: uuid, question: z.string().min(2).max(300) }), c.body);
@@ -325,9 +401,12 @@ const people = z.array(uuid).min(1).max(20);
 
 // ---- Yarn and Untangle (§B11)
 on("POST", "yarn/cards", "user", async (c) => {
-  const b = parse(z.object({ squadId: uuid, payerId: uuid.optional(), cents, note: z.string().min(1).max(80), forUserIds: people, includePayer: z.boolean().optional(), kind: z.enum(["split", "treat"]).optional() }), c.body);
+  const b = parse(z.object({ squadId: uuid, payerId: uuid.optional(), cents, note: z.string().min(1).max(80), forUserIds: people, includePayer: z.boolean().optional(), kind: z.enum(["split", "treat"]).optional(), amounts: z.record(uuid, cents).optional() }), c.body);
   return yarn.logIPaid(me(c), b);
 });
+on("GET", "yarn/cards/:id", "user", async (c) => yarn.cardView(me(c), c.params[0]));
+on("POST", "yarn/cards/:id/accept", "user", async (c) => yarn.acceptOffer(me(c), c.params[0], parse(z.object({ forUser: uuid.optional() }), c.body).forUser));
+on("POST", "yarn/cards/:id/counter", "user", async (c) => yarn.counterCard(me(c), c.params[0], parse(z.object({ text: z.string().max(200).optional(), cents: z.number().int().min(0).max(5_000_000).optional(), forUser: uuid.optional() }), c.body)));
 on("POST", "yarn/cards/:id/confirm", "user", async (c) => yarn.respondCard(me(c), c.params[0], true));
 on("POST", "yarn/cards/:id/dispute", "user", async (c) => yarn.respondCard(me(c), c.params[0], false));
 on("POST", "yarn/cards/:id/gift", "user", async (c) => help.loanToGift(me(c), c.params[0]));
@@ -337,12 +416,16 @@ on("POST", "yarn/cards/:id/edit", "user", async (c) => {
   return yarn.editCard(me(c), c.params[0], b);
 });
 on("GET", "yarn", "user", async (c) => yarn.myYarn(me(c)));
+on("GET", "squads/:id/cards", "user", async (c) => {
+  await squadAccess(c.params[0], me(c));
+  return yarn.myOpenCards(me(c), c.params[0]);
+});
 on("GET", "squads/:id/yarn", "user", async (c) => {
   await squadAccess(c.params[0], me(c));
   return yarn.squadYarnSummary(c.params[0]);
 });
 on("POST", "squads/:id/untangle", "user", async (c) => yarn.runUntangle(me(c), c.params[0]));
-on("POST", "yarn/settlements/:id/pay", "user", async (c) => yarn.paySettlement(me(c), c.params[0]));
+on("POST", "yarn/settlements/:id/pay", "user", async (c) => yarn.paySettlement(me(c), c.params[0], parse(z.object({ refill: z.boolean().optional() }), c.body).refill));
 
 // ---- Nine Lives (§B12)
 on("POST", "help", "user", async (c) => {
@@ -350,8 +433,9 @@ on("POST", "help", "user", async (c) => {
   return help.askForHelp(me(c), b);
 });
 on("GET", "help", "user", async (c) => help.myHelpAsks(me(c)));
+on("GET", "help/mine", "user", async (c) => help.myRequests(me(c)));
 on("GET", "help/:id", "user", async (c) => help.helpView(me(c), c.params[0]));
-on("POST", "help/:id/pledge", "user", async (c) => help.pledgeHelp(me(c), c.params[0], parse(z.object({ cents, asLoan: z.boolean().optional() }), c.body)));
+on("POST", "help/:id/pledge", "user", async (c) => help.pledgeHelp(me(c), c.params[0], parse(z.object({ cents, asLoan: z.boolean().optional(), refill: z.boolean().optional() }), c.body)));
 on("POST", "help/:id/decline", "user", async (c) => help.declineHelp(me(c), c.params[0]));
 on("POST", "help/:id/unpledge", "user", async (c) => help.unpledgeHelp(me(c), c.params[0]));
 on("POST", "help/:id/accept", "user", async (c) => help.acceptHelp(me(c), c.params[0]));
@@ -360,10 +444,13 @@ on("POST", "help/:id/close", "user", async (c) => help.closeHelp(me(c), c.params
 // ---- Kitty Party (§B13)
 on("GET", "squads/:id/party", "user", async (c) => party.partyView(me(c), c.params[0]));
 on("POST", "squads/:id/party", "user", async (c) => {
-  const b = parse(z.object({ name: z.string().min(1).max(40), goalCents: cents.nullish(), goalNote: z.string().max(80).nullish(), intervalUnit: z.enum(["DAY", "WEEK", "MONTH"]).optional() }), c.body);
+  const b = parse(z.object({ name: z.string().min(1).max(40), goalCents: cents, intervalUnit: z.enum(["DAY", "WEEK", "MONTH"]).optional() }), c.body);
   return party.createParty(me(c), c.params[0], b);
 });
-on("POST", "squads/:id/party/join", "user", async (c) => party.joinParty(me(c), c.params[0], parse(z.object({ monthlyCents: cents }), c.body).monthlyCents));
+on("POST", "squads/:id/party/join", "user", async (c) => {
+  const b = parse(z.object({ monthlyCents: cents, saveDay: z.number().int().min(1).max(28).optional() }), c.body);
+  return party.joinParty(me(c), c.params[0], b.monthlyCents, b.saveDay);
+});
 on("POST", "squads/:id/party/stop", "user", async (c) => party.stopSaving(me(c), c.params[0]));
 on("POST", "squads/:id/party/withdraw", "user", async (c) => party.withdrawSavings(me(c), c.params[0], parse(z.object({ cents: cents.optional() }), c.body).cents));
 
@@ -380,7 +467,7 @@ on("POST", "gifts/:id/plan", "user", async (c) => catnip.startGiftPlan(me(c), c.
 
 // ---- The Bowl (§B15)
 on("POST", "squads/:id/bowls", "user", async (c) => {
-  const b = parse(z.object({ service: z.string().min(1).max(40), totalCents: cents, seats: z.number().int().min(2).max(12), memberIds: people }), c.body);
+  const b = parse(z.object({ service: z.string().min(1).max(40), totalCents: cents, seats: z.number().int().min(2).max(12), memberIds: people, payDay: z.number().int().min(1).max(28).optional() }), c.body);
   return bowl.createBowl(me(c), { squadId: c.params[0], ...b });
 });
 on("GET", "squads/:id/bowls", "user", async (c) => {
@@ -388,7 +475,7 @@ on("GET", "squads/:id/bowls", "user", async (c) => {
   return (await db()).query(`select id, service, total_cents, seats, status from bowls where squad_id=$1 order by created_at`, [c.params[0]]);
 });
 on("GET", "bowls/:id", "user", async (c) => bowl.bowlView(me(c), c.params[0]));
-on("POST", "bowls/:id/join", "user", async (c) => bowl.joinBowl(me(c), c.params[0]));
+on("POST", "bowls/:id/join", "user", async (c) => bowl.joinBowl(me(c), c.params[0], parse(z.object({ payDay: z.number().int().min(1).max(28).optional() }), c.body).payDay));
 on("POST", "bowls/:id/leave", "user", async (c) => bowl.leaveBowl(me(c), c.params[0]));
 on("POST", "bowls/:id/close", "user", async (c) => bowl.closeBowl(me(c), c.params[0]));
 
@@ -401,6 +488,16 @@ on("GET", "squads/:id/purrs", "user", async (c) => {
   return purrs.squadPurrs(c.params[0]);
 });
 on("GET", "month", "user", async (c) => myMonth(me(c)));
+on("GET", "settle-up", "user", async (c) => settleUp(me(c)));
+on("POST", "settle-up/untangle", "user", async (c) => untangleEverything(me(c)));
+on("POST", "settle-up/with", "user", async (c) => {
+  const b = parse(z.object({ squadId: uuid, otherId: uuid, refill: z.boolean().optional() }), c.body);
+  return untangleWith(me(c), b.squadId, b.otherId, b.refill);
+});
+on("POST", "settle-up/nudge", "user", async (c) => {
+  const b = parse(z.object({ squadId: uuid, otherId: uuid }), c.body);
+  return nudgeRow(me(c), b.squadId, b.otherId);
+});
 on("POST", "me/settings", "user", async (c) => {
   const hm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
   const b = parse(z.object({ meowTime: hm.optional(), quietStart: hm.optional(), quietEnd: hm.optional(), tz: z.string().max(60).optional() }), c.body);
@@ -425,52 +522,120 @@ on("POST", "calendar/token", "user", async (c) => {
 on("POST", "jobs/run", "jobs", async () => runJobs());
 
 // ---------------------------------------------------------------- PayPal returns (the browser lands here after approving)
+/** Coming back from PayPal always lands in the app with a plain message, never on an error page. */
+async function cameBack(c: Ctx, param: string, finish: () => Promise<string | void>) {
+  try {
+    return redirect(c, (await finish()) ?? `/?${param}=done`);
+  } catch (e) {
+    console.error(`[return] ${param}: ${(e as Error).message}`);
+    return redirect(c, `/?${param}=failed`);
+  }
+}
+
+/** They refilled their Treat Jar for a payment (FR-JAR-7): make that payment now, from the jar. */
+async function finishAfterRefill(userId: string, after: string) {
+  const [kind, id, x, y] = after.split(":");
+  if (kind === "chip") return pounce.chipIn(userId, id);
+  if (kind === "yarn") return yarn.paySettlement(userId, id);
+  if (kind === "overrun") return receipts.payOverrun(userId, id);
+  if (kind === "join") return pounce.tagAlong(userId, id, {});
+  if (kind === "tag") return pounce.payTagRequest(userId, id);
+  if (kind === "pledge") return help.pledgeHelp(userId, id, { cents: Number(x), asLoan: y === "1" });
+  if (kind === "leftover") return receipts.confirmReceipt(userId, id, Number(x));
+  if (kind === "untangle") return untangleWith(userId, id, x);
+  if (kind === "float") return whims.floatDraft(userId, id);
+  if (kind === "yes") return whims.confirmAnswers(userId, id.split(",").map((answerId) => ({ answerId, answer: "yes" as const })));
+  if (kind === "tagask") return pounce.tagAlong(userId, id, {});
+  throw new Error(`A refill has no known next step: ${kind}`);
+}
+
 on("GET", "return/pay", "none", async (c) => {
   const token = c.url.searchParams.get("token");
   if (!token) return redirect(c, "/?pay=cancelled");
-  const cap = await captureCheckout(token);
-  const [kind, id] = (cap.customId ?? "").split(":");
-  if (kind === "yarn" && id && cap.status === "COMPLETED") {
-    const [s] = await (await db()).query<{ squad_id: string; cents: number }>(`select squad_id, cents from yarn_settlements where id=$1`, [id]);
-    await (await db()).tx((q) => moveLedger(q, "world", `yarn:${s.squad_id}`, s.cents, { kind: "yarn_pay", reason: "settling Yarn", paypalId: cap.captureId ?? null }));
-    await yarn.finishSettlement(id, "paypal", cap.captureId ?? null);
-  }
-  return redirect(c, "/?pay=done");
+  return cameBack(c, "pay", async () => {
+    const cap = await captureCheckout(token);
+    if (cap.status !== "COMPLETED") throw new Error(`Payment not completed (${cap.status})`);
+    const d = await db();
+    // A refresh of this page brings back the same payment. It only counts once.
+    if ((await d.query(`select 1 from ledger where paypal_id=$1 limit 1`, [cap.captureId])).length) return;
+    const [kind, id, ...rest] = (cap.customId ?? "").split(":");
+    if (kind === "yarn" && id) {
+      const [s] = await d.query<{ squad_id: string; cents: number }>(`select squad_id, cents from yarn_settlements where id=$1`, [id]);
+      await d.tx((q) => moveLedger(q, "world", `yarn:${s.squad_id}`, s.cents, { kind: "yarn_pay", reason: "settling Yarn", paypalId: cap.captureId ?? null }));
+      await yarn.finishSettlement(id, "paypal", cap.captureId ?? null);
+    } else if (kind === "overrun" && id) await receipts.finishOverrunPayment(id, rest[0], cap.cents, cap.captureId ?? null);
+    else if (kind === "leftover" && id) await receipts.finishLeftover(id, Number(rest[0]), cap.captureId ?? null);
+    else throw new Error(`A completed payment has no known tag: ${kind || "none"}`);
+  });
 });
 on("GET", "return/help", "none", async (c) => {
   const token = c.url.searchParams.get("token");
   if (!token) return redirect(c, "/?help=cancelled");
-  await help.finishHelpHold(token);
-  return redirect(c, "/?help=done");
+  return cameBack(c, "help", async () => {
+    await help.finishHelpHold(token);
+  });
 });
 on("GET", "return/party", "none", async (c) => {
   const sub = c.url.searchParams.get("subscription_id");
-  if (sub) {
-    await party.finishPartySubscription(sub);
+  if (!sub) return redirect(c, "/?subscription=cancelled");
+  return cameBack(c, "subscription", async () => {
+    // Only for anyone part-way through approving an old subscription. New Bowl shares come from the Treat Jar.
     await (await db()).query(`update bowl_members set status='active' where subscription_id=$1`, [sub]);
-  }
-  return redirect(c, sub ? "/?subscription=done" : "/?subscription=cancelled");
+  });
 });
 
 on("GET", "return/jar", "none", async (c) => {
   const token = c.url.searchParams.get("token");
   if (!token) return redirect(c, "/?jar=cancelled");
-  await jar.finishTopUp(token);
-  return redirect(c, "/?jar=done");
+  return cameBack(c, "jar", async () => {
+    const top = await jar.finishTopUp(token);
+    // What the refill was for now comes out of the jar. If that step fails, the refill is still safe in the jar.
+    const paw = await pounce.finishJarRefill(token).catch((e) => {
+      console.error(`[return] paw after refill: ${(e as Error).message}`);
+      return null;
+    });
+    if (paw) return `/?plan=${paw.planId}&hold=done`;
+    if (!top.after || !top.fresh) return;
+    return finishAfterRefill(top.userId, top.after).then(
+      () => "/?pay=done",
+      (e) => {
+        console.error(`[return] payment after refill: ${(e as Error).message}`);
+      },
+    );
+  });
 });
 on("GET", "return/hold", "none", async (c) => {
   const token = c.url.searchParams.get("token");
   if (!token) return redirect(c, "/?hold=cancelled");
-  const r = await pounce.finishWalletHold(token);
-  return redirect(c, `/?plan=${r.planId}&hold=done`);
+  return cameBack(c, "hold", async () => `/?plan=${(await pounce.finishWalletHold(token)).planId}&hold=done`);
 });
 
 // ---------------------------------------------------------------- auth
 
-on("GET", "auth/login", "none", async () => {
+on("GET", "auth/login", "none", async (c) => {
+  if (localLoginAllowed(c.req)) return redirect(c, "/local-login");
   const state = randomUUID();
   const to = loginUrl(`${baseUrl()}/api/auth/paypal/callback`, state);
   return new Response(null, { status: 303, headers: { location: to, "set-cookie": `${OAUTH_COOKIE}=${state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600` } });
+});
+// Local testing only: stands in for PayPal's login page, which refuses localhost (see dev-auth.ts).
+on("GET", "auth/local-people", "none", async (c) => {
+  if (!localLoginAllowed(c.req)) throw new HttpError(404, "Not found.");
+  const d = await db();
+  return Promise.all(
+    localPeople().map(async (p) => {
+      const [u] = await d.query<{ kitten: string | null; look: Record<string, unknown> | null; onboarded: boolean }>(`select k.name as kitten, k.look, u.onboarded from users u left join kittens k on k.user_id=u.id where u.paypal_payer_id=$1`, [`local:${p.email}`]);
+      return { ...p, onboarded: u?.onboarded ?? false, kitten: u?.kitten ?? null, look: u?.look ?? null };
+    }),
+  );
+});
+on("POST", "auth/local-login", "none", async (c) => {
+  if (!localLoginAllowed(c.req)) throw new HttpError(404, "Not found.");
+  const email = parse(z.object({ email: z.string().email() }), c.body).email;
+  const person = localPeople().find((p) => p.email === email);
+  if (!person) throw new HttpError(403, "That isn't one of the sandbox people.");
+  const u = await users.upsertPayPalUser(await db(), { payerId: `local:${email}`, name: person.name, email, emailVerified: true });
+  return new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": sessionCookieHeader(u.id) } });
 });
 on("POST", "auth/logout", "none", async () => new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json", "set-cookie": `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0` } }));
 
@@ -485,6 +650,11 @@ on("POST", "dev/savings", "dev", async (c) => {
   const b = parse(z.object({ squadId: uuid, userId: uuid, cents }), c.body);
   await seedSavings(b.squadId, b.userId, b.cents);
   return { ok: true };
+});
+// A brand-new, real (not demo) account with no PayPal login, so sign-up and real-user money paths can be tested locally.
+on("POST", "dev/new-user", "dev", async () => {
+  const u = await users.upsertPayPalUser(await db(), { payerId: `local-test-${crypto.randomUUID()}`, name: "New friend" });
+  return new Response(JSON.stringify({ ok: true, id: u.id }), { headers: { "content-type": "application/json", "set-cookie": sessionCookieHeader(u.id) } });
 });
 on("POST", "dev/login-as", "dev", async (c) => {
   const b = parse(z.object({ userId: uuid }), c.body);

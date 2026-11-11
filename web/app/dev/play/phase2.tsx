@@ -7,7 +7,8 @@ import { useCallback, useEffect, useState } from "react";
 type Call = (method: string, path: string, body?: unknown, label?: string, quiet?: boolean) => Promise<{ status: number; json: unknown }>;
 type Act = (method: string, path: string, body?: unknown, label?: string) => Promise<void>;
 type Member = { id: string; name: string };
-type NeedItem = { text: string; action?: { method: string; path: string; body?: Record<string, unknown> } };
+type NeedAction = { method: string; path: string; body?: Record<string, unknown> };
+type NeedItem = { text: string; action?: NeedAction; choices?: { label: string; action: NeedAction }[]; approveUrl?: string };
 type Gift = { group_id: string; for_name: string; birthday: string; status: string };
 type Bowl = { id: string; service: string; total_cents: number; seats: number; status: string };
 
@@ -89,7 +90,17 @@ export default function Phase2({ call, act, actAs, squadId, users }: { call: Cal
         {needs.map((n, i) => (
           <div key={i} className="flex items-center justify-between gap-2 text-sm">
             <span>{n.text}</span>
-            {n.action && (
+            {n.approveUrl && (
+              <a className={btn2} href={n.approveUrl}>
+                Approve
+              </a>
+            )}
+            {n.choices?.map((c) => (
+              <button key={c.label} className={btn2} onClick={() => void run(c.action.method, c.action.path, c.action.body ?? {}, c.label)}>
+                {c.label}
+              </button>
+            ))}
+            {n.action && !n.choices && !n.approveUrl && (
               <button className={btn2} onClick={() => void run(n.action!.method, n.action!.path, n.action!.body ?? {}, n.text.slice(0, 40))}>
                 Do it
               </button>
@@ -359,6 +370,9 @@ export default function Phase2({ call, act, actAs, squadId, users }: { call: Cal
         <button className={btn2} onClick={() => void run("POST", `squads/${squadId}/leave`, {}, "leave this squad")}>
           Leave this squad
         </button>
+        <button className={btn2} onClick={() => void run("POST", "settle-up/untangle", {}, "untangle everything")}>
+          Untangle everything (all groups)
+        </button>
         <div className="flex flex-wrap gap-2">
           {[
             ["meows", "Meows"],
@@ -366,6 +380,7 @@ export default function Phase2({ call, act, actAs, squadId, users }: { call: Cal
             ["purrs", "My purrs"],
             [`squads/${squadId}/purrs`, "Top Cat"],
             ["month", "My Month"],
+            ["settle-up", "Settle up"],
           ].map(([path, label]) => (
             <button key={path} className={btn2} onClick={() => void call("GET", path, undefined, label)}>
               {label}

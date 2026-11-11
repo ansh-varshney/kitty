@@ -11,7 +11,7 @@ import { listRules } from "./users";
 
 export const TAGS: Record<string, string> = {
   "First Paw": "First to paw in on a plan",
-  Clutch: "Covering someone, or being the booker",
+  Clutch: "Being the booker",
   "Zero Nudges": "5 times paying or pawing in without a reminder",
   Untangler: "5 times settling Yarn the same day",
   Lifesaver: "Helping with a Nine Lives request",
@@ -36,13 +36,20 @@ async function count(q: Queryable, sql: string, params: unknown[]) {
   return r.n;
 }
 
+async function bookedForTheSquad(q: Queryable, e: Ev, userId: string) {
+  await award(q, e, userId, 5, "booked for the squad");
+  await tag(q, userId, "Clutch");
+  const gift = await count(q, `select count(*)::int as n from squads where id=$1 and kind='gift'`, [e.squad_id]);
+  if (gift) await tag(q, userId, "Catnip Captain");
+}
+
 /** Job: award purrs and tags from new events (FR-PURR-1). */
 export async function purrsScan() {
   const d = await db();
   const [st] = await d.query<{ cursor: string }>(`insert into job_state (name) values ('purrs') on conflict (name) do update set name=excluded.name returning cursor`);
   const events = await d.query<Ev>(
     `select id, type, user_id, squad_id, object_id, created_at from events where id > $1 and user_id is not null
-     and type in ('paw.placed','paw.cover','pounce.paid_booker','yarn.settled','help.given','party.saved') order by id limit 2000`,
+     and type in ('paw.placed','paw.cover','pounce.charged','pounce.paid_booker','yarn.settled','help.given','party.saved') order by id limit 2000`,
     [Number(st.cursor)],
   );
   let awarded = 0;
@@ -57,7 +64,7 @@ export async function purrsScan() {
             await award(q, e, u, 3, "first paw");
             await tag(q, u, "First Paw");
           }
-          const quick = await count(q, `select count(*)::int as n from events p where p.user_id=$1 and p.type in ('paw.placed','yarn.settled') and not exists (select 1 from events r where r.user_id=$1 and r.type='yarn.reminder' and r.object_id=p.object_id)`, [u]);
+          const quick = await count(q, `select count(*)::int as n from events p where p.user_id=$1 and p.type in ('paw.placed','yarn.settled') and not exists (select 1 from events r where r.user_id=$1 and r.type in ('yarn.reminder','plan.reminder') and r.object_id=p.object_id)`, [u]);
           if (quick >= 5) await tag(q, u, "Zero Nudges");
           break;
         }
@@ -65,13 +72,15 @@ export async function purrsScan() {
           await award(q, e, u, 3, "covered a friend");
           await tag(q, u, "Clutch");
           break;
-        case "pounce.paid_booker": {
-          await award(q, e, u, 5, "booked for the squad");
-          await tag(q, u, "Clutch");
-          const gift = await count(q, `select count(*)::int as n from squads where id=$1 and kind='gift'`, [e.squad_id]);
-          if (gift) await tag(q, u, "Catnip Captain");
+        // Since v1.33 the pot goes to the booker's Treat Jar at the Pounce: that's the moment they take on the booking.
+        case "pounce.charged": {
+          const booking = await count(q, `select count(*)::int as n from plans where id=$1 and booker_id=$2`, [e.object_id, u]);
+          if (booking) await bookedForTheSquad(q, e, u);
           break;
         }
+        case "pounce.paid_booker":
+          await bookedForTheSquad(q, e, u);
+          break;
         case "yarn.settled": {
           await award(q, e, u, 2, "untangled");
           const sameDay = await count(q, `select count(*)::int as n from yarn_settlements where from_user=$1 and status='paid' and paid_at::date = created_at::date`, [u]);

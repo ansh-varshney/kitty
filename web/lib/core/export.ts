@@ -24,8 +24,7 @@ export async function diaryCsv(userId: string) {
   for (const e of items) {
     const cents = (e.payload as { cents?: number }).cents;
     // ISO 8601 UTC, so spreadsheets sort it and nothing depends on the server's locale.
-    const p = e.payload as { text?: string; message?: string };
-    const what = p.text ?? (p.message ? `You said: ${p.message}` : e.type);
+    const what = e.line;
     lines.push(row([new Date(e.createdAt).toISOString(), what, e.actor, cents != null ? (cents / 100).toFixed(2) : "", e.reason ?? "", e.paypalId ?? ""]));
   }
   return lines.join("\r\n");
@@ -40,6 +39,7 @@ export async function monthCsv(userId: string) {
   for (const s of m.money.bySquad) lines.push(row(["by squad", s.squad, usd(s.cents)]));
   lines.push(row(["owed", "you owe", usd(m.money.owed.youOweCents)]), row(["owed", "owed to you", usd(m.money.owed.owedToYouCents)]));
   for (const s of m.money.saved.partySavings) lines.push(row(["saved", `Kitty Party: ${s.squad}`, usd(s.cents)]));
+  for (const s of m.money.saved.thisMonth) lines.push(row(["saved", `Put into ${s.name} this month`, usd(s.cents)]));
   lines.push(row(["saved", "Treat Jar", usd(m.money.saved.treatJar.availableCents)]));
   return lines.join("\r\n");
 }

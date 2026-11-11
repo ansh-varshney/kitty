@@ -1,5 +1,6 @@
 import { runTick } from "./tick";
 import { yarnJobs } from "./yarn";
+import { remindersJob } from "./reminders";
 import { helpJobs } from "./help";
 import { partyJobs } from "./party";
 import { bowlJobs } from "./bowl";
@@ -30,6 +31,7 @@ async function runJobsNow(now: Date) {
   };
   await step("deadlines", () => runTick(now)); // whims fade, holds placed, paw-up windows, deadlines, payout retries
   await step("yarn", () => yarnJobs(now));
+  await step("reminders", () => remindersJob(now));
   await step("help", () => helpJobs(now));
   await step("party", () => partyJobs(now));
   await step("bowl", () => bowlJobs(now));

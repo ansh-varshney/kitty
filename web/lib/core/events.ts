@@ -1,4 +1,5 @@
 import type { Queryable } from "../db";
+import { describeAll } from "./describe";
 
 /**
  * Event log (PRD §B19 Kitten Diary, FR-LOG-1, FR-SEC-5, FR-SEC-10).
@@ -39,25 +40,27 @@ export async function logEvent(q: Queryable, e: EventInput): Promise<void> {
   );
 }
 
-export type FeedItem = { id: number; type: string; actor: string; actorId: string | null; public: Record<string, unknown>; createdAt: string };
+export type FeedItem = { id: number; type: string; actor: string; actorId: string | null; mine: boolean; objectType: string | null; objectId: string | null; public: Record<string, unknown>; createdAt: string };
 
 /** What the squad sees (masked). */
-export async function squadFeed(q: Queryable, squadId: string, afterId = 0, limit = 50): Promise<FeedItem[]> {
-  const rows = await q.query<{ id: string; type: string; actor: string; actor_id: string | null; public: Record<string, unknown>; created_at: string }>(
-    `select id, type, actor, actor_id, public, created_at from events
+export async function squadFeed(q: Queryable, squadId: string, afterId = 0, limit = 50, viewerId?: string): Promise<FeedItem[]> {
+  const rows = await q.query<{ id: string; type: string; actor: string; actor_id: string | null; object_type: string | null; object_id: string | null; public: Record<string, unknown>; created_at: string }>(
+    `select id, type, actor, actor_id, object_type, object_id, public, created_at from events
      where squad_id = $1 and public is not null and id > $2 order by id desc limit $3`,
     [squadId, afterId, limit],
   );
-  return rows.map((r) => ({ id: Number(r.id), type: r.type, actor: r.actor, actorId: r.actor_id, public: r.public, createdAt: r.created_at }));
+  return rows.map((r) => ({ id: Number(r.id), type: r.type, actor: r.actor, actorId: r.public?.anonymous ? null : r.actor_id, mine: viewerId != null && r.actor_id === viewerId, objectType: r.object_type, objectId: r.object_id, public: r.public, createdAt: r.created_at }));
 }
 
-export type DiaryItem = { id: number; type: string; actor: string; payload: Record<string, unknown>; reason: string | null; paypalId: string | null; createdAt: string };
+export type DiaryItem = { id: number; type: string; actor: string; payload: Record<string, unknown>; reason: string | null; paypalId: string | null; createdAt: string; objectType: string | null; objectId: string | null; squadId: string | null; line: string };
 
-/** The owner's Kitten Diary: everything about them, with reasons and PayPal IDs (FR-LOG-2). */
-export async function diary(q: Queryable, userId: string, limit = 100): Promise<DiaryItem[]> {
-  const rows = await q.query<{ id: string; type: string; actor: string; payload: Record<string, unknown>; reason: string | null; paypal_id: string | null; created_at: string }>(
-    `select id, type, actor, payload, reason, paypal_id, created_at from events where user_id = $1 order by id desc limit $2`,
-    [userId, limit],
+/** The owner's Kitten Diary: everything about them, in a full sentence, with reasons and PayPal IDs (FR-LOG-2). */
+export async function diary(q: Queryable, userId: string, limit = 100, skipTypes: string[] = []): Promise<DiaryItem[]> {
+  const rows = await q.query<{ id: string; type: string; actor: string; payload: Record<string, unknown>; reason: string | null; paypal_id: string | null; created_at: string; object_type: string | null; object_id: string | null; squad_id: string | null }>(
+    `select id, type, actor, payload, reason, paypal_id, created_at, object_type, object_id, squad_id from events where user_id = $1 and type <> all($3::text[]) order by id desc limit $2`,
+    [userId, limit, skipTypes],
   );
-  return rows.map((r) => ({ id: Number(r.id), type: r.type, actor: r.actor, payload: r.payload, reason: r.reason, paypalId: r.paypal_id, createdAt: r.created_at }));
+  const items = rows.map((r) => ({ id: Number(r.id), type: r.type, actor: r.actor, payload: r.payload, reason: r.reason, paypalId: r.paypal_id, createdAt: r.created_at, objectType: r.object_type, objectId: r.object_id, squadId: r.squad_id }));
+  const lines = await describeAll(q, userId, items);
+  return items.map((e, i) => ({ ...e, line: lines[i] }));
 }

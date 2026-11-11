@@ -14,8 +14,8 @@ from playwright.sync_api import sync_playwright
 
 BASE = Path(__file__).parent
 SRC = BASE / "Kitty-PRD.md"
-VERSION = "1.15"
-DATE = "8 Nov 2026"
+VERSION = "1.44"
+DATE = "11 Nov 2026"
 OUT_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else BASE.parent
 OUT = OUT_DIR / f"Kitty-PRD-v{VERSION}.pdf"
 

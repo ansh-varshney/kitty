@@ -3,10 +3,8 @@ import { logEvent } from "./events";
 import { acct, move } from "./ledger";
 import { getUser, listRules } from "./users";
 import { jarBalances } from "./month";
-import { payOut } from "./money-flow";
-import { decide } from "../referee/rules";
-import { baseUrl } from "../env";
-import { authorizeHold, captureHold, createTestCardHold, createWalletHold, voidHold } from "../paypal/holds";
+import { payOut, refillOrAsk } from "./money-flow";
+import { authorizeHold, captureHold, createTestCardHold, voidHold } from "../paypal/holds";
 import { withLock } from "./locks";
 
 /**
@@ -76,12 +74,12 @@ async function shareRealSquad(q: Queryable, a: string, b: string) {
   return r.length > 0;
 }
 
-/** A friend pledges: Treat Jar (within free hand) or a PayPal hold (FR-LIVES-4). One at a time per request. */
-export async function pledgeHelp(userId: string, requestId: string, input: { cents: number; asLoan?: boolean }) {
+/** A friend pledges from their Treat Jar (FR-LIVES-4, FR-JAR-7). One at a time per request. */
+export async function pledgeHelp(userId: string, requestId: string, input: { cents: number; asLoan?: boolean; refill?: boolean }) {
   return withLock(`help:${requestId}`, () => pledgeHelpNow(userId, requestId, input));
 }
 
-async function pledgeHelpNow(userId: string, requestId: string, input: { cents: number; asLoan?: boolean }) {
+async function pledgeHelpNow(userId: string, requestId: string, input: { cents: number; asLoan?: boolean; refill?: boolean }) {
   const d = await db();
   const [req] = await d.query<{ requester_id: string; cents: number; kind: string; status: string }>(`select requester_id, cents, kind, status from help_requests where id=$1`, [requestId]);
   const [ask] = await d.query<{ status: string }>(`select status from help_asks where request_id=$1 and user_id=$2`, [requestId, userId]);
@@ -95,32 +93,24 @@ async function pledgeHelpNow(userId: string, requestId: string, input: { cents: 
   input = { ...input, cents: Math.min(input.cents, stillNeeded) }; // never more than they asked for
   const asLoan = req.kind === "loan" ? true : req.kind === "gift" ? false : Boolean(input.asLoan);
   const user = await getUser(d, userId);
-  const rules = (await listRules(d, userId)).filter((r) => r.type !== "R1");
   const jar = await jarBalances(d, userId);
-  const dec = decide({ kind: "help", cents: input.cents, source: "jar" }, { rules, jarAvailableCents: jar.availableCents, monthSpentCents: 0, monthCommittedCents: 0 });
 
-  let pledge: { id: string; source: string; approveUrl?: string };
-  if (dec.mode === "auto") {
+  // Pledges come from the Treat Jar too. If it's short, they're asked to refill it first (FR-JAR-7).
+  if (jar.availableCents < input.cents && !user?.is_demo) return refillOrAsk(userId, input.cents - jar.availableCents, jar.availableCents, { refill: input.refill, after: `pledge:${requestId}:${input.cents}:${asLoan ? 1 : 0}`, reason: "a Nine Lives pledge" });
+  let pledge: { id: string; source: string };
+  if (jar.availableCents >= input.cents) {
     pledge = await d.tx(async (q) => {
       await move(q, acct.jar(userId), acct.jarHeld(userId), input.cents, { kind: "jar_reserve", userId, reason: "Nine Lives pledge" });
       const [p] = await q.query<{ id: string }>(`insert into help_pledges (request_id, user_id, cents, as_loan, source, status) values ($1,$2,$3,$4,'jar','held') returning id`, [requestId, userId, input.cents, asLoan]);
       return { id: p.id, source: "jar" };
     });
-  } else if (user?.is_demo) {
+  } else {
     const hold = await createTestCardHold({ cents: input.cents, referenceId: requestId, customId: `help:${userId.slice(0, 8)}` });
     const [p] = await d.query<{ id: string }>(
       `insert into help_pledges (request_id, user_id, cents, as_loan, source, order_id, authorization_id, status) values ($1,$2,$3,$4,'paypal',$5,$6,'held') returning id`,
       [requestId, userId, input.cents, asLoan, hold.orderId, hold.authorizationId],
     );
     pledge = { id: p.id, source: "paypal" };
-  } else {
-    const base = baseUrl();
-    const { orderId, approveUrl } = await createWalletHold({ cents: input.cents, referenceId: requestId, customId: `help:${userId.slice(0, 8)}`, description: "Kitty: Nine Lives pledge", returnUrl: `${base}/api/v1/return/help`, cancelUrl: `${base}/?cancelled=help` });
-    const [p] = await d.query<{ id: string }>(
-      `insert into help_pledges (request_id, user_id, cents, as_loan, source, order_id, approve_url, status) values ($1,$2,$3,$4,'paypal',$5,$6,'pending') returning id`,
-      [requestId, userId, input.cents, asLoan, orderId, approveUrl],
-    );
-    pledge = { id: p.id, source: "paypal", approveUrl };
   }
   await d.query(`update help_asks set status='pledged' where request_id=$1 and user_id=$2`, [requestId, userId]);
   await logEvent(d, { userId, actor: "user", actorId: userId, type: "help.pledged", objectType: "help", objectId: requestId, payload: { cents: input.cents, asLoan, source: pledge.source, text: `You pledged ${fmt(input.cents)}${asLoan ? " as a no-interest loan" : ""}. It's only taken if they accept.` } });
@@ -128,7 +118,7 @@ async function pledgeHelpNow(userId: string, requestId: string, input: { cents: 
   await logEvent(d, { userId: req.requester_id, actor: "kitten", type: "help.progress", objectType: "help", objectId: requestId, payload: { ...(await requestTotals(d, requestId)), text: `A friend pledged ${fmt(input.cents)}.` } });
   const t = await requestTotals(d, requestId);
   if (t.pledgedCents >= req.cents) await acceptHelpNow(req.requester_id, requestId); // full: fill straight away
-  return { ok: true, pledgeId: pledge.id, source: pledge.source, approveUrl: pledge.approveUrl };
+  return { ok: true, pledgeId: pledge.id, source: pledge.source };
 }
 
 /**
@@ -189,6 +179,16 @@ export async function myHelpAsks(userId: string) {
 }
 
 /** What the requester sees: totals only, never who declined (FR-LIVES-6). */
+/** The requests you made yourself (F33): how they're going. */
+export async function myRequests(userId: string) {
+  const d = await db();
+  const rows = await d.query<{ id: string; cents: number; note: string; kind: string; status: string; received_cents: number | null; needed_by: string | null }>(
+    `select id, cents, note, kind, status, received_cents, needed_by from help_requests where requester_id=$1 order by created_at desc limit 20`,
+    [userId],
+  );
+  return Promise.all(rows.map(async (r) => ({ ...r, ...(await requestTotals(d, r.id)) })));
+}
+
 export async function helpView(userId: string, requestId: string) {
   const d = await db();
   const [r] = await d.query<{ requester_id: string; cents: number; note: string; kind: string; status: string; received_cents: number | null; needed_by: string | null }>(

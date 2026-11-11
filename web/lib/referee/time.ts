@@ -120,6 +120,22 @@ export function localToday(tz: string, now = new Date()): { date: string; weekda
   return { date, weekday, time };
 }
 
+/** "1st", "2nd", "23rd", "11th". */
+export const ordinal = (n: number) => `${n}${["th", "st", "nd", "rd"][n % 10 > 3 || Math.floor(n / 10) === 1 ? 0 : n % 10]}`;
+
+/**
+ * The next time a day of the month comes round, 9am where the person lives (FR-PARTY-7).
+ * Today counts as right now, unless `afterToday` is set: then it's next month's.
+ */
+export function nextDayOfMonth(day: number, tz: string, now = new Date(), opts: { afterToday?: boolean } = {}): Date {
+  const [y, m, d] = localToday(tz, now).date.split("-").map(Number);
+  if (d === day && !opts.afterToday) return now;
+  const later = day > d;
+  const year = later || m < 12 ? y : y + 1;
+  const month = later ? m : m === 12 ? 1 : m + 1;
+  return zonedToUtc(`${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T09:00`, tz) as Date;
+}
+
 /** The weekday (0 = Sunday) in the zone. */
 export function nowParts(tz: string, now = new Date()): { weekday: number } {
   const wd = new Intl.DateTimeFormat("en-US", { timeZone: validTz(tz), weekday: "short" }).format(now);

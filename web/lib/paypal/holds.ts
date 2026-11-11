@@ -132,9 +132,19 @@ export async function createCheckout(opts: { cents: number; customId: string; de
 }
 
 export async function captureCheckout(orderId: string) {
-  const { result } = await orders().captureOrder({ id: orderId, paypalRequestId: randomUUID() });
-  const cap = result.purchaseUnits?.[0]?.payments?.captures?.[0];
-  return { captureId: cap?.id, status: cap?.status, cents: cap?.amount ? Math.round(Number(cap.amount.value) * 100) : 0, customId: result.purchaseUnits?.[0]?.customId };
+  let order: Order;
+  try {
+    ({ result: order } = await orders().captureOrder({ id: orderId, paypalRequestId: randomUUID() }));
+  } catch (e) {
+    // Coming back twice (a refresh) must not look like a failure: the money already moved, once.
+    if (!/ORDER_ALREADY_CAPTURED/.test(`${(e as Error).message} ${JSON.stringify(e)}`)) throw e;
+    ({ result: order } = await orders().getOrder({ id: orderId }));
+  }
+  const unit = order.purchaseUnits?.[0];
+  const cap = unit?.payments?.captures?.[0];
+  // PayPal puts custom_id on the capture in this reply, not on the purchase unit (owner test, 9 Nov: a paid top-up was never credited).
+  const customId = cap?.customId ?? unit?.customId ?? (await orders().getOrder({ id: orderId })).result.purchaseUnits?.[0]?.customId;
+  return { captureId: cap?.id, status: cap?.status, cents: cap?.amount ? Math.round(Number(cap.amount.value) * 100) : 0, customId };
 }
 
 export async function testCardPayment(opts: { cents: number; customId: string }) {

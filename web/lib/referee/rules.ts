@@ -3,7 +3,7 @@
  * decides whether an action is allowed. Personal rules can only ever add "ask".
  */
 
-export type RuleType = "R1" | "R2" | "R3" | "R4" | "R5" | "R6" | "R7" | "personal";
+export type RuleType = "R1" | "R2" | "R3" | "R4" | "R5" | "R6" | "R7" | "R8" | "personal";
 
 export type Rule = {
   type: RuleType;
@@ -113,7 +113,7 @@ export function usuallyIn(rules: Rule[], squadId: string, cents: number | null):
 
 /** Rules that can be stored: a custom rule must map to a known type or be a restrict-only personal rule. */
 export function validateRule(rule: Rule): string | null {
-  const known: RuleType[] = ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "personal"];
+  const known: RuleType[] = ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "personal"];
   if (!known.includes(rule.type)) return "unknown rule type";
   if (rule.type === "R1" || rule.type === "R2" || rule.type === "R3") {
     const c = num(rule.params.cents, -1);

@@ -5,6 +5,7 @@ import { logEvent } from "./events";
 import { mapRule } from "../kitten/ai";
 import type { Rule, RuleType } from "../referee/rules";
 import { validTz } from "../referee/time";
+import { ACCESSORIES, EYES, FURS, PATTERNS } from "../kitten/looks";
 
 /** Users, kittens, sign-up, House Rules and squads (PRD §B1–B3, §B5). */
 
@@ -62,7 +63,8 @@ export const OnboardingInput = z.object({
   kitten: z.object({
     name: z.string().min(1).max(20),
     breed: z.enum(BREEDS),
-    look: z.object({ fur: z.string().max(20), pattern: z.string().max(20), accessory: z.string().max(20) }),
+    // The owner picks only the look (§B1 page 3); mood and pose are set by what the kitten does (lib/kitten/moments.ts).
+    look: z.object({ fur: z.enum(FURS), pattern: z.enum(PATTERNS), accessory: z.enum(ACCESSORIES), eyes: z.enum(EYES).default("amber") }),
   }),
   rules: z.object({
     funBudgetCents: z.number().int().min(0).max(1_000_000),
@@ -133,7 +135,7 @@ export async function addCustomRule(q: Queryable, userId: string, text: string, 
 
 // ---------------------------------------------------------------- squads
 
-export async function createSquad(q: Queryable, ownerId: string, name: string, opts: { kind?: "squad" | "mini"; memberIds?: string[] } = {}) {
+export async function createSquad(q: Queryable, ownerId: string, name: string, opts: { kind?: "squad" | "mini" | "direct"; memberIds?: string[] } = {}) {
   const code = randomBytes(5).toString("base64url");
   const [s] = await q.query<{ id: string }>(`insert into squads (name, kind, created_by, invite_code) values ($1,$2,$3,$4) returning id`, [
     name,
@@ -149,11 +151,26 @@ export async function createSquad(q: Queryable, ownerId: string, name: string, o
   return { id: s.id, inviteCode: code };
 }
 
+/** Two friends' private pair: what a one-to-one plan belongs to. Reused every time, and never shown as a squad. */
+export async function directSquad(q: Queryable, ownerId: string, friendId: string): Promise<{ id: string }> {
+  const [found] = await q.query<{ id: string }>(
+    `select s.id from squads s join memberships a on a.squad_id=s.id and a.user_id=$1 join memberships b on b.squad_id=s.id and b.user_id=$2 where s.kind='direct' limit 1`,
+    [ownerId, friendId],
+  );
+  if (found) return found;
+  const people = await q.query<{ id: string; name: string }>(`select id, name from users where id = any($1::uuid[])`, [[ownerId, friendId]]);
+  const nameOf = (id: string) => people.find((p) => p.id === id)?.name ?? "A friend";
+  return createSquad(q, ownerId, `${nameOf(ownerId)} & ${nameOf(friendId)}`.slice(0, 40), { kind: "direct", memberIds: [friendId] });
+}
+
+/** A pasted invite link or a bare code: either way, the code. */
+export const inviteCodeIn = (text: string) => (/[?&]invite=([^&\s#]+)/.exec(text)?.[1] ?? text).trim();
+
 export async function joinSquad(q: Queryable, userId: string, code: string) {
-  const [s] = await q.query<{ id: string; name: string }>(`select id, name from squads where invite_code=$1 and archived_at is null`, [code]);
+  const [s] = await q.query<{ id: string; name: string }>(`select id, name from squads where invite_code=$1 and archived_at is null`, [inviteCodeIn(code)]);
   if (!s) throw new Error("That invite link doesn't work any more.");
-  await q.query(`insert into memberships (squad_id, user_id) values ($1,$2) on conflict (squad_id, user_id) do update set left_at=null`, [s.id, userId]);
-  await logEvent(q, { squadId: s.id, actor: "user", actorId: userId, type: "squad.joined", public: { userId } });
+  const joined = await q.query(`insert into memberships (squad_id, user_id) values ($1,$2) on conflict (squad_id, user_id) do update set left_at=null where memberships.left_at is not null returning user_id`, [s.id, userId]);
+  if (joined.length) await logEvent(q, { squadId: s.id, actor: "user", actorId: userId, type: "squad.joined", public: { userId } });
   return s;
 }
 
@@ -163,8 +180,8 @@ export async function isMember(q: Queryable, squadId: string, userId: string): P
 }
 
 export async function squadMembers(q: Queryable, squadId: string) {
-  return q.query<{ id: string; name: string; kitten_name: string | null; role: string }>(
-    `select u.id, u.name, k.name as kitten_name, m.role from memberships m join users u on u.id=m.user_id
+  return q.query<{ id: string; name: string; kitten_name: string | null; kitten_look: Record<string, unknown> | null; role: string }>(
+    `select u.id, u.name, k.name as kitten_name, k.look as kitten_look, m.role from memberships m join users u on u.id=m.user_id
      left join kittens k on k.user_id=u.id where m.squad_id=$1 and m.left_at is null order by m.joined_at`,
     [squadId],
   );
@@ -173,9 +190,45 @@ export async function squadMembers(q: Queryable, squadId: string) {
 export async function mySquads(q: Queryable, userId: string) {
   return q.query<{ id: string; name: string; kind: string; invite_code: string }>(
     `select s.id, s.name, s.kind, s.invite_code from squads s join memberships m on m.squad_id=s.id
-     where m.user_id=$1 and m.left_at is null and s.archived_at is null order by s.created_at`,
+     where m.user_id=$1 and m.left_at is null and s.archived_at is null and s.kind <> 'direct' order by s.created_at`,
     [userId],
   );
+}
+
+/** Change the kitten's look, name or personality (My Kitten, F44). Never its rules or money behaviour (FR-ONB-4). */
+export async function updateKitten(q: Queryable, userId: string, raw: unknown) {
+  const i = OnboardingInput.shape.kitten.parse(raw);
+  await q.query(`update kittens set name=$2, breed=$3, look=$4 where user_id=$1`, [userId, i.name, i.breed, JSON.stringify(i.look)]);
+}
+
+/** Edit what sign-up collected (My Kitten, FR-ONB-5). */
+export async function updateProfile(q: Queryable, userId: string, raw: unknown) {
+  const i = z
+    .object({ name: z.string().min(1).max(40), gender: z.enum(GENDERS), birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), shareBirthday: z.boolean(), interests: z.array(z.string().min(2).max(30)).min(3).max(12) })
+    .parse(raw);
+  await q.query(`update users set name=$2, gender=$3, birth_date=$4, share_birthday=$5, interests=$6 where id=$1`, [userId, i.name, i.gender, i.birthDate, i.shareBirthday, i.interests]);
+}
+
+/** What friends' kittens may say about you (R4). Money isn't a choice: it's never shared (FR-RULE-8). */
+export async function setSharing(q: Queryable, userId: string, raw: unknown) {
+  const i = z.object({ availability: z.boolean(), attendance: z.boolean(), interests: z.boolean() }).parse(raw);
+  const on = Object.entries(i).filter(([, v]) => v).map(([k]) => k);
+  await q.query(`update rules set params=$2, text=$3 where user_id=$1 and type='R4' and squad_id is null`, [userId, JSON.stringify(i), `Share: ${on.join(", ") || "nothing"}. Money: never`]);
+}
+
+/** Remove one of your own rules or a squad rule. The Basics stay: they can only be changed. */
+export async function deleteRule(q: Queryable, userId: string, ruleId: string) {
+  const r = await q.query(`update rules set active=false where id=$1 and user_id=$2 and type not in ('R1','R2','R3','R4') returning id`, [ruleId, userId]);
+  if (!r.length) throw new Error("That rule can't be removed.");
+}
+
+/** What the kitten remembers (FR-KIT-6): viewable and deletable. */
+export async function kittenMemory(q: Queryable, userId: string): Promise<string[]> {
+  const [k] = await q.query<{ memory: unknown }>(`select memory from kittens where user_id=$1`, [userId]);
+  return Array.isArray(k?.memory) ? (k.memory as unknown[]).map(String) : [];
+}
+export async function setKittenMemory(q: Queryable, userId: string, memory: string[]) {
+  await q.query(`update kittens set memory=$2 where user_id=$1`, [userId, JSON.stringify(memory.slice(-100))]);
 }
 
 /** "Keep as squad": turn an archived mini-squad into a regular squad (FR-SQD-6). */
