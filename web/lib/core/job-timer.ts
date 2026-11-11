@@ -8,14 +8,26 @@ import { runJobs } from "./jobs";
 const EVERY_MS = 15 * 60_000;
 let started = false;
 
+/** What the health check shows. Kept on globalThis because instrumentation and route handlers are bundled apart. */
+export type TimerState = { startedAt: string; runs: number; lastRanAt: string | null; lastMs: number | null; lastError: string | null };
+const KEY = "__kittyJobTimer";
+
 export function startJobTimer() {
   if (started) return;
   started = true;
+  const state: TimerState = { startedAt: new Date().toISOString(), runs: 0, lastRanAt: null, lastMs: null, lastError: null };
+  (globalThis as Record<string, unknown>)[KEY] = state;
   const run = () => {
     const t = Date.now();
     return runJobs().then(
-      (out) => console.log(`[jobs timer] ran in ${Date.now() - t} ms${"skipped" in out ? " (another run was going)" : ""}`),
-      (e) => console.error(`[jobs timer] ${(e as Error).message}`),
+      (out) => {
+        Object.assign(state, { runs: state.runs + 1, lastRanAt: new Date().toISOString(), lastMs: Date.now() - t, lastError: null });
+        console.log(`[jobs timer] ran in ${Date.now() - t} ms${"skipped" in out ? " (another run was going)" : ""}`);
+      },
+      (e) => {
+        state.lastError = (e as Error).message;
+        console.error(`[jobs timer] ${(e as Error).message}`);
+      },
     );
   };
   // A minute after the server starts (so a deploy is settled), then every 15 minutes.

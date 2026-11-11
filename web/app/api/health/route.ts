@@ -9,7 +9,9 @@ export async function GET() {
   try {
     const d = await db();
     await d.query("select 1");
-    return Response.json({ ok: true, db: d.kind, settings });
+    // The app's own 15-minute job timer (Render only): when it last ran, so it can be checked from outside.
+    const jobsTimer = ((globalThis as Record<string, unknown>).__kittyJobTimer as object | undefined) ?? null;
+    return Response.json({ ok: true, db: d.kind, settings, jobsTimer });
   } catch (err) {
     return Response.json({ ok: false, error: (err as Error).message, settings }, { status: 500 });
   }

@@ -46,7 +46,18 @@ Also in the app: **Yarn** (who owes whom, "I paid" cards, Untangle with the fewe
 | AI (Groq, then Gemini) | Reads whims and receipts from text and screenshots, prepares each kitten's answer and reason, writes the kitten's messages, understands the kitten chat, checks personal rules against a guardrail |
 | Code, not AI | Every money decision: shares, rounding, limits, the ledger. The AI only reads and writes words |
 
-Models: Groq `openai/gpt-oss-20b` (text), `qwen/qwen3.8-27b` (screenshots), `openai/gpt-oss-120b` (backup), then Gemini `gemini-3.1-flash-lite` / `gemini-3.5-flash`, then code templates, so the app never stops if a model is down. The PayPal Server SDK code was written with the **APIMatic Context Plugin** for PayPal.
+Models: Groq `openai/gpt-oss-20b` (text), `qwen/qwen3.8-27b` (screenshots), `openai/gpt-oss-120b` (backup), then Gemini `gemini-3.1-flash-lite` / `gemini-3.5-flash`, then code templates, so the app never stops if a model is down.
+
+### Built with the APIMatic Context Plugin
+
+Kitty was built with Claude Code, with APIMatic's PayPal Server SDK Context Plugin installed (`npx context-plugins install https://github.com/paypaldev/server-sdk-context-plugin-preview`). Its TypeScript skills guided the PayPal integration:
+
+| Skill | Where it shows in the code |
+|---|---|
+| Client initialization, configuration and resilience | [`web/lib/paypal/sdk.ts`](web/lib/paypal/sdk.ts): one client, controllers built by us, and retries set explicitly, because the SDK's generated defaults retry nothing and never retry POST |
+| Calling endpoints and models | [`web/lib/paypal/holds.ts`](web/lib/paypal/holds.ts): Orders create, capture, authorize, void and refund, each with its own `PayPal-Request-Id` so a retry can't charge twice |
+| Error handling | A capture PayPal already completed (`ORDER_ALREADY_CAPTURED`, e.g. coming back from PayPal twice) is treated as the same payment, not a failure; a stalled sandbox call times out and is retried safely |
+| Testing | [`web/lib/paypal/holds.test.ts`](web/lib/paypal/holds.test.ts) |
 
 ## Architecture
 
