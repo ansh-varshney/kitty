@@ -15,7 +15,7 @@ Built for the *Build What's Next with PayPal and AI* hackathon (Devpost).
 ## Try it
 
 1. Open https://kitty-web.onrender.com on a phone, or on a laptop (it shows in a phone frame).
-2. Tap **Log in with PayPal** and sign in with a **PayPal sandbox personal account**. Judges: use the sandbox login in the Devpost submission notes, or any sandbox personal account from your own PayPal developer dashboard.
+2. Tap **Log in with PayPal** and sign in with a **PayPal sandbox personal account**.
 3. Adopt your kitten: pick its look, name and personality, set your fun budget and free hand, and top up your Treat Jar (sandbox money).
 4. Float a whim from the **+** button, answer one in **Meows**, or just tell your kitten what you want in the kitten chat.
 
