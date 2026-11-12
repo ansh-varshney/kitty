@@ -1,6 +1,6 @@
 # Kitty: Product Requirements Document
 
-**Version 1.45 · 11 Nov 2026 · Status: IN BUILD (Phases 1–2 built and tested; Phase 3+4 (design, app, video) in progress)**
+**Version 1.46 · 12 Nov 2026 · Status: SUBMITTED. The app is complete and live at https://kitty-web.onrender.com (all phases built and tested).**
 Owner: Ansh Varshney (solo) · Hackathon: *Build What's Next with PayPal and AI* (Devpost) · Deadline: Thu 12 Nov 2026, 12:00 PM PT (Fri 13 Nov, 1:30 AM IST)
 
 > This PRD is the **single source of truth** for the build. Requirement IDs (`FR-…`, `NFR-…`, `AT-…`) are the build spec. To change the spec: edit `prd-source/Kitty-PRD.md`, bump the version in `prd-source/build.py`, add a row to the change log (§E3), and rebuild the PDF with `python prd-source/build.py`.
@@ -2239,3 +2239,4 @@ The owner approved the flows and asked to see them in the real app, then change 
 | 1.43 | 11 Nov 2026 | From owner testing: a yes to someone whose jar is short now tells everyone what's happening (the newcomer, the host and everyone in), and the plan shows them as Joining until their money lands (§B9). |
 | 1.44 | 11 Nov 2026 | Owner's rule: agreeing and paying are one step (FR-JAR-8). Floating a whim, a Yes, joining and asking to tag along set the share aside right then; a short jar is refilled first, and the step finishes when the money lands. No refill cards after someone has agreed. Set-aside money goes back if it isn't used (§B6, FR-PLAN-10, §B9, FR-POUNCE-14..16). |
 | 1.45 | 11 Nov 2026 | Phase 5 started: everything committed and deployed; secrets scan clean; the app runs its own scheduled jobs on Render instead of a cron service; README rewritten for the finished app; Devpost draft written (§D1, §D8). |
+| 1.46 | 12 Nov 2026 | Submitted: status updated; the app is complete and live. |

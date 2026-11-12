@@ -1,7 +1,7 @@
 # Kitty: PayPal AI Hackathon ("Build What's Next with PayPal and AI", Devpost)
 
 ## Source of truth: ALWAYS the latest PRD
-- The **only** current spec is the newest `Kitty-PRD-v*.pdf` in this folder: the highest version number (v1.45 as of 11 Nov 2026; note 1.10+ is newer than 1.9).
+- The **only** current spec is the newest `Kitty-PRD-v*.pdf` in this folder: the highest version number (v1.46 as of 12 Nov 2026; note 1.10+ is newer than 1.9).
 - Its exact text is `prd-source/Kitty-PRD.md`. **Read that file for any spec question**: it's the same content and easier to search. Check its title line ("Version X.Y") and the change log (§E3) to confirm you have the newest version.
 - **Never** use anything in `_superseded/` (old PRDs v1.0–v1.1, early ideation files). They are out of date.
 - Requirement IDs (`FR-…`, `NFR-…`, `AT-…`) are the build spec. Reference them in code and commits.

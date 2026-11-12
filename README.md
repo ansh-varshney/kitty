@@ -9,7 +9,7 @@ Built for the *Build What's Next with PayPal and AI* hackathon (Devpost).
 | | |
 |---|---|
 | Live app | https://kitty-web.onrender.com (PayPal sandbox) |
-| Spec | [`Kitty-PRD-v1.45.pdf`](Kitty-PRD-v1.45.pdf) (source in `prd-source/`) |
+| Spec | [`Kitty-PRD-v1.46.pdf`](Kitty-PRD-v1.46.pdf) (source in `prd-source/`) |
 | License | [MIT](LICENSE) |
 
 ## Try it
