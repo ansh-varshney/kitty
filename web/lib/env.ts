@@ -43,5 +43,20 @@ export function baseUrl(): string {
   return (e.APP_BASE_URL ?? e.RENDER_EXTERNAL_URL ?? "http://localhost:3000").replace(/\/$/, "");
 }
 
+/**
+ * Where to send people back to after a redirect. Behind Render's proxy, req.url says http://localhost:10000 (the
+ * internal port), so redirects built from it sent people to a dead page after PayPal login. On Render the public
+ * address is known; locally, the browser's own Host header is.
+ */
+export function publicOrigin(req: Request): string {
+  const e = env();
+  const configured = e.APP_BASE_URL ?? e.RENDER_EXTERNAL_URL;
+  if (configured) return configured.replace(/\/$/, "");
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  if (!host) return new URL(req.url).origin;
+  const proto = req.headers.get("x-forwarded-proto") ?? new URL(req.url).protocol.replace(":", "");
+  return `${proto}://${host}`;
+}
+
 export const PAYPAL_API_BASE = "https://api-m.sandbox.paypal.com";
 export const PAYPAL_WEB_BASE = "https://www.sandbox.paypal.com";

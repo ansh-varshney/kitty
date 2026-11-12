@@ -1,7 +1,7 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { loginUrl } from "../paypal/login";
-import { baseUrl } from "../env";
+import { baseUrl, publicOrigin } from "../env";
 import { db } from "../db";
 import { OAUTH_COOKIE, requestUserId, sessionCookieHeader, SESSION_COOKIE } from "../session";
 import { devAllowed, localLoginAllowed, localPeople } from "../dev-auth";
@@ -702,7 +702,8 @@ function jobsKeyOk(req: Request) {
 }
 
 function redirect(c: Ctx, to: string) {
-  return Response.redirect(new URL(to, c.url.origin), 303);
+  // Never c.url.origin: behind Render's proxy it's http://localhost:10000.
+  return Response.redirect(new URL(to, publicOrigin(c.req)), 303);
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

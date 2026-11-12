@@ -3,6 +3,7 @@ import { exchangeCode } from "@/lib/paypal/login";
 import { db } from "@/lib/db";
 import { OAUTH_COOKIE, readCookie, sessionCookieHeader } from "@/lib/session";
 import { upsertPayPalUser } from "@/lib/core/users";
+import { publicOrigin } from "@/lib/env";
 
 /**
  * Log in with PayPal callback (FR-ONB-1).
@@ -12,6 +13,8 @@ import { upsertPayPalUser } from "@/lib/core/users";
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
+  // Never url.origin: behind Render's proxy it's http://localhost:10000.
+  const origin = publicOrigin(req);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   const expected = readCookie(req.headers.get("cookie"), OAUTH_COOKIE);
@@ -20,7 +23,7 @@ export async function GET(req: Request) {
   if (state && expected && state === expected) {
     const clear = `${OAUTH_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
     if (!code) {
-      const res = NextResponse.redirect(new URL(`/?login=cancelled`, url.origin), 303);
+      const res = NextResponse.redirect(new URL(`/?login=cancelled`, origin), 303);
       res.headers.append("set-cookie", clear);
       return res;
     }
@@ -28,13 +31,13 @@ export async function GET(req: Request) {
       const p = await exchangeCode(code);
       if (!p.payerId) throw new Error("PayPal didn't say who you are.");
       const user = await upsertPayPalUser(d, p);
-      const res = NextResponse.redirect(new URL(user.onboarded ? `/?login=done` : `/?login=new`, url.origin), 303);
+      const res = NextResponse.redirect(new URL(user.onboarded ? `/?login=done` : `/?login=new`, origin), 303);
       res.headers.append("set-cookie", sessionCookieHeader(user.id));
       res.headers.append("set-cookie", clear);
       return res;
     } catch (err) {
       console.error("[login]", (err as Error).message);
-      const res = NextResponse.redirect(new URL(`/?login=failed`, url.origin), 303);
+      const res = NextResponse.redirect(new URL(`/?login=failed`, origin), 303);
       res.headers.append("set-cookie", clear);
       return res;
     }
@@ -56,5 +59,5 @@ export async function GET(req: Request) {
     }
   }
   await d.query("insert into spike_runs (step, ok, result) values ($1, $2, $3)", ["loginReturned", result.ok, JSON.stringify(result)]);
-  return NextResponse.redirect(new URL(`/dev?done=loginReturned`, url.origin));
+  return NextResponse.redirect(new URL(`/dev?done=loginReturned`, origin));
 }

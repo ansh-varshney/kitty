@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { authorizeHold, getSubscription } from "@/lib/spike/steps";
 import { db } from "@/lib/db";
+import { publicOrigin } from "@/lib/env";
 
 /**
  * PayPal sends the member back here after they approve.
@@ -9,6 +10,7 @@ import { db } from "@/lib/db";
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);
+  const origin = publicOrigin(req);
   const kind = url.searchParams.get("kind");
   const d = await db();
   let step = "returnUnknown";
@@ -31,5 +33,5 @@ export async function GET(req: Request) {
     result = { ok: false, summary: (err as Error).message };
   }
   await d.query("insert into spike_runs (step, ok, result) values ($1, $2, $3)", [step, result.ok, JSON.stringify(result)]);
-  return NextResponse.redirect(new URL(`/dev?done=${step}`, url.origin));
+  return NextResponse.redirect(new URL(`/dev?done=${step}`, origin));
 }
