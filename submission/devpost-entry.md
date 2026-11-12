@@ -1,6 +1,6 @@
 # Kitty: Devpost entry
 
-Fields in the order Devpost asks for them. Still to fill in: the video link.
+Fields in the order Devpost asks for them. Submitted: https://devpost.com/software/kitty-fyxo5r
 
 ---
 
@@ -114,7 +114,7 @@ PayPal, PayPal Server SDK, PayPal Payouts, Log in with PayPal, PayPal Webhooks, 
 ## Try it out (links)
 - Live app: https://kitty-web.onrender.com
 - Code: https://github.com/ansh-varshney/kitty
-- Video: (yours)
+- Video: https://www.youtube.com/watch?v=hXHLW6SnBwk
 
 ## Testing notes for judges
 Open https://kitty-web.onrender.com on a phone or laptop and tap **Log in with PayPal**, then sign in with this PayPal sandbox account:

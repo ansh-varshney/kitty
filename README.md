@@ -9,6 +9,8 @@ Built for the *Build What's Next with PayPal and AI* hackathon (Devpost).
 | | |
 |---|---|
 | Live app | https://kitty-web.onrender.com (PayPal sandbox) |
+| Demo video | [Watch on YouTube (3 min)](https://www.youtube.com/watch?v=hXHLW6SnBwk) |
+| Devpost | [https://devpost.com/software/kitty-fyxo5r](https://devpost.com/software/kitty-fyxo5r) |
 | Spec | [`Kitty-PRD-v1.46.pdf`](Kitty-PRD-v1.46.pdf) (source in `prd-source/`) |
 | License | [MIT](LICENSE) |
 
