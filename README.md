@@ -35,6 +35,89 @@ Everything is real on the sandbox: real accounts, real PayPal orders and payouts
 
 Also in the app: **Yarn** (who owes whom, "I paid" cards, Untangle with the fewest payments, nudges), **Kitty Party** (a squad saving together each month), **The Bowl** (a shared subscription, paid monthly from each jar), **Nine Lives** (help a friend in a tight spot), **Catnip** (a group birthday gift), **My Month** (fun budget, Treat Jar, settle up, spent, saved), and the **kitten chat**, where you can do all of it by asking.
 
+## How Kitty meets the judging criteria
+
+### 1. Technological implementation
+*How thoroughly and skillfully it uses the PayPal Developer Platform and AI, and whether it's a working, non-trivial build.*
+
+**PayPal, end to end on the sandbox**
+
+| What | How Kitty uses it | Where |
+|---|---|---|
+| Log in with PayPal | The only way in. Each account is a real PayPal sandbox identity | `web/lib/paypal/login.ts` |
+| Orders (PayPal Server SDK) | Every Treat Jar top-up and refill: create, approve, capture. The capture carries a tag saying what the money was for, so the step it was paying for finishes by itself | `web/lib/paypal/holds.ts` |
+| Payouts | The booker pays the seller, people withdraw from their jar, and money goes back out | `web/lib/paypal/payouts.ts` |
+| Webhooks | Every PayPal event is signature-verified and recorded | `web/app/api/paypal/webhook/route.ts` |
+| Safe retries | Every PayPal call carries its own request ID, so a retry can never charge twice. Retries are switched on explicitly, because the SDK's defaults retry nothing | `web/lib/paypal/sdk.ts` |
+| APIMatic Context Plugin | Used with Claude Code to write the SDK integration (see below) | |
+
+**AI: a personal agent for every user**
+
+| What the kitten does | How |
+|---|---|
+| Reads a plan from text, a screenshot or a link | Groq vision model for images, text model for words, with dates and amounts checked by code |
+| Prepares each friend's answer | Yes, No or Negotiate, from that person's own calendar and private budget, with a one-line reason |
+| Negotiates with the host's kitten | Another time or price, without ever saying why. Strict limits stop endless loops: one try each, at most two changes, never more than 25% off |
+| Does everything from chat | "Tag along on go-karting", "untangle my squad", "what do I owe?" all become real actions |
+| Reads receipts | The total is read from a photo, then checked by the booker |
+| Checks personal rules | A guardrail turns a rule into something safe to follow, or refuses it |
+| Never touches money | AI writes words. A plain-code **referee** decides every amount, and it's the only part that sees everyone's limits |
+| Never stops | Groq first, then Gemini, then plain code, each with a time budget |
+
+**A real money system, not a mock-up**
+- A double-entry ledger in whole cents, which can never go negative.
+- Each money step is all or nothing, and money actions run one at a time, so double taps, retries and timers firing twice can't move money twice.
+- Agreeing and paying are one step: a yes sets your share aside in the same tap.
+- The app runs its own jobs every 15 minutes: deadlines, reminders, monthly savings, retrying payouts.
+- Tested on the real sandbox: 197 edge-case tests, 34 end-to-end runs and 104 unit tests.
+
+### 2. Design
+*A complete, coherent product, not just a technical proof of concept.*
+
+| What | In Kitty |
+|---|---|
+| A whole app | Five tabs: Meows (your daily brief), Squads, the + button, My Month and My Kitten |
+| A real start | Log in with PayPal, then adopt your kitten: its look, name and personality, your fun budget, and how much it may spend on its own |
+| Every flow finishes | From an idea to a plan, the Pounce, paying the booking, the receipt and the leftovers. Plus Yarn, Kitty Party, The Bowl, Nine Lives and Catnip |
+| Every step can be undone | Take back a whim, cancel a plan, leave a squad, fix an "I paid" card |
+| One tap, or just ask | Cards with the answer already prepared, or tell your kitten in chat |
+| A kitten that feels alive | Drawn entirely in code. It blinks, dozes, changes mood and leaps when the host Pounces. Every money action plays a small moment |
+| Designed before it was built | Key screens were designed first in a design tool, then built from the same parts |
+| Feels like an app | Mobile-first, in a phone frame on a laptop, and installable on a phone's home screen |
+| No demo mode | Real accounts and real sandbox money. You use it like anyone else |
+
+### 3. Potential impact
+*A credible, specific case for a real problem, and a solution that addresses it.*
+
+**The problem.** Friends spend a lot of money together, and handle it badly. **76%** of Gen Z who fronted money for a group were never fully paid back, and **1 in 5** have muted a chat or cancelled plans to dodge a pay-back conversation (Zelle, 2025). **82%** of group travellers would pay *more* than their share just to avoid a money argument (CIT Bank, 2026).
+
+**The audience.** Friend groups who plan things together: trips, dinners, gifts, subscriptions.
+
+**How Kitty answers each moment**
+
+| The moment today | What Kitty does |
+|---|---|
+| One person books and fronts everything | The pot reaches the booker **before** they book |
+| "I'm in!" costs nothing, so people flake | Saying yes means paying, in the same tap |
+| Nobody says "that's too much for me" | Your kitten negotiates for you and never says why. Your budget stays private |
+| "You still owe me…" goes unsaid | Yarn tracks it, Untangle settles it in the fewest payments, and kittens do the reminding |
+| Nobody sees what friendships cost them | My Month shows it next to your own fun budget |
+| Too embarrassing to ask for help | Nine Lives: ask privately, and friends' kittens help within their owners' rules |
+
+Everything above runs in the live app on the PayPal sandbox, with real accounts.
+
+### 4. Innovation and idea
+*How creative and novel the concept is, and how it differs from what exists.*
+
+| Idea | Why it's new |
+|---|---|
+| A personal agent for every friend | Most AI agents deal with businesses for you. Kitty gives each friend an agent that speaks for them, to their friends |
+| Commit first, not settle later | Bill-splitting apps record debts after someone has paid. Kitty collects before anyone pays, so there's nothing to chase |
+| Private limits, shared decisions | Kittens negotiate and decide who fits without anyone seeing anyone else's budget |
+| Pounce with whoever's in | The plan goes ahead with the people who paid; latecomers can tag along and everyone gets the difference back |
+| The Treat Jar as a mandate | An allowance your kitten can spend within your rules, and nothing more: a safe pattern for letting an agent pay |
+| A tradition, rebuilt | The Kitty Party, friends saving into a shared pot every month, built into the app |
+
 ## Where PayPal and AI are used
 
 | | Used for |
