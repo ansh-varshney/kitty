@@ -1,6 +1,6 @@
 # Kitty: Devpost entry
 
-Fields in the order Devpost asks for them. Still to fill in: the video link and the judge login.
+Fields in the order Devpost asks for them. Still to fill in: the video link.
 
 ---
 
@@ -117,4 +117,9 @@ PayPal, PayPal Server SDK, PayPal Payouts, Log in with PayPal, PayPal Webhooks, 
 - Video: (yours)
 
 ## Testing notes for judges
-Open https://kitty-web.onrender.com on a phone or laptop and tap **Log in with PayPal**. Sign in with this PayPal sandbox account: (the judge login, yours to add), or any PayPal sandbox personal account. It runs on the PayPal sandbox, so no real money moves.
+Open https://kitty-web.onrender.com on a phone or laptop and tap **Log in with PayPal**, then sign in with this PayPal sandbox account:
+
+- **Email:** kitty.judge@personal.example.com
+- **Password:** KittyJudge
+
+The judge account is already in a squad with friends, with entries and rules set up, so every part of the app has something to explore. It runs on the PayPal sandbox, so no real money moves.
